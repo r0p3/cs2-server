@@ -87,7 +87,14 @@ repserver_configure_mode() {
     esac
 
     mkdir -p "$cfg_dir/repserver" || return 1
-    cp /opt/repserver/modes/*.cfg "$cfg_dir/repserver/" || return 1
+    local profile
+    for profile in bot_game bot_game_t bot_dm bot_dm_pistol; do
+        if [[ ! -r "/opt/repserver/modes/$profile.cfg" ]]; then
+            echo "RepServer: imagen saknar $profile.cfg. Bygg om med ./scripts/update.sh." >&2
+            return 1
+        fi
+        cp "/opt/repserver/modes/$profile.cfg" "$cfg_dir/repserver/" || return 1
+    done
     repserver_mode_include "$cfg_dir/gamemode_competitive_server.cfg" "$competitive" || return 1
     repserver_mode_include "$cfg_dir/gamemode_deathmatch_server.cfg" "$deathmatch" || return 1
     export REPSERVER_ACTIVE_MODE CS2_GAMEALIAS

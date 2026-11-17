@@ -16,7 +16,14 @@ RUN dotnet build -c Release -o /out -p:CounterStrikeSharpApi=/bundle/addons/coun
     && mkdir -p /bundle/addons/counterstrikesharp/plugins/RepServer \
     && cp /out/RepServer.dll /bundle/addons/counterstrikesharp/plugins/RepServer/
 
+# Keep the SteamCMD sequence, but load the hook packaged with this image.
+COPY --from=upstream /home/steam/entry.sh /build/upstream-entry.sh
+RUN grep -Fxq 'source "${STEAMAPPDIR}/pre.sh"' /build/upstream-entry.sh \
+    && sed 's|^source "\${STEAMAPPDIR}/pre\.sh"$|source /opt/repserver/pre.sh|' /build/upstream-entry.sh > /bundle/entry.sh \
+    && bash -n /bundle/entry.sh
+
 FROM upstream
 COPY --from=build /bundle/ /opt/repserver/
 COPY config/maps.txt /opt/repserver/maps.txt
 COPY config/modes/*.cfg /opt/repserver/modes/
+COPY scripts/pre.sh /opt/repserver/pre.sh

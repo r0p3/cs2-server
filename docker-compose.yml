@@ -5,6 +5,7 @@ services:
       args:
         CS2_BASE_IMAGE: ${CS2_BASE_IMAGE:-joedwards32/cs2:latest}
     platform: linux/amd64
+    command: ["bash", "/opt/repserver/entry.sh"]
     restart: unless-stopped
     init: true
     stop_grace_period: 45s
@@ -19,9 +20,6 @@ services:
       CS2_GAMETYPE: "0"
       CS2_GAMEMODE: "1"
       CS2_MAPGROUP: mg_active
-      CS2_BOT_DIFFICULTY: "3"
-      CS2_BOT_QUOTA: "10"
-      CS2_BOT_QUOTA_MODE: fill
       CS2_LAN: "0"
       CS2_CHEATS: "0"
       CS2_SERVER_HIBERNATE: "0"
@@ -39,12 +37,6 @@ services:
       - type: bind
         source: ./data/state
         target: /var/lib/repserver
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ./scripts/pre.sh
-        target: /home/steam/cs2-dedicated/pre.sh
-        read_only: true
         bind:
           create_host_path: false
     logging:

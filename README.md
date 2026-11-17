@@ -30,13 +30,13 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 1. Ta en kopia av gamla Compose-inställningar och katalogen `/home/r0p3/data/gameservers/cs2-data`. Inventera egna cfg-filer, plugins och eventuella gamla startskript.
 2. Stoppa den befintliga servern på värden. Kontrollera att `data/server` är tom och kör `rsync -a /home/r0p3/data/gameservers/cs2-data/ data/server/` som en användare med rätt att läsa källan och bevara ägarskapet.
-3. Kontrollera kopian och skrivbehörigheten för uid 1000. Den nya Compose-konfigurationen monterar sitt eget `pre.sh`. Flytta över eventuella anpassningar från det gamla skriptet som du behöver behålla. Upstream skapar om `server.cfg` vid uppstart.
+3. Kontrollera kopian och skrivbehörigheten för uid 1000. Imagen innehåller RepServers eget `pre.sh`. Flytta över eventuella anpassningar från det gamla skriptet som du behöver behålla. Upstream skapar om `server.cfg` vid uppstart.
 4. Kör `./scripts/update.sh`. Compose väljer containernamn utifrån projektnamnet. Om båda installationerna ska köras samtidigt måste de också använda olika värdportar.
 5. Kontrollera anslutning, kartor och plugin. Behåll källkatalogen och backupen tills servern har provkörts.
 
 ## Kommandon
 
-Kommandolistan visas i spelarens chatt vid anslutning. `!help` visar samma lista igen.
+Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga listan med syntax, beskrivning och adminmarkering.
 
 | Kommando | Vem | Beteende |
 | --- | --- | --- |
@@ -47,8 +47,13 @@ Kommandolistan visas i spelarens chatt vid anslutning. `!help` visar samma lista
 | `!live` | Admin | Avsluta uppvärmningen i bot-game |
 | `!restart` eller `!omstart` | Admin | Starta om matchen |
 | `!pause`, `!unpause` | Admin | Begär matchpaus eller återuppta matchen |
+| `!kick_bot` | Admin | Ta bort alla bots och stäng av automatisk botpåfyllning på aktuell karta |
+| `!add_bot_t`, `!add_bot_ct` | Admin | Lägg till en bot på T respektive CT om det finns plats |
+| `!set_bot_t <antal>`, `!set_bot_ct <antal>` | Admin | Fyll på valt lag med bots upp till antalet du anger, så långt platserna räcker |
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
+
+Om automatisk botpåfyllning redan har fyllt servern, börja med `!kick_bot`. Kör sedan exempelvis `!set_bot_t 8` för att fylla på T, eller lägg till en bot i taget med `!add_bot_t`. Spelare och bots delar serverns 10 platser. `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Lägesprofilens botregler laddas igen vid kartbyte.
 
 ## Spellägen
 
@@ -67,7 +72,7 @@ git pull --ff-only
 ./scripts/update.sh
 ```
 
-Skriptet validerar Compose, bygger imagen före omstarten och återskapar containern. Data och lokalt tillstånd ligger kvar i `data/`. SteamCMD uppdaterar spelet under uppstart. Följ loggen och kontrollera pluginet efter uppdatering. Gör en backup av `data/state` och `.env` innan du uppdaterar en server du behöver kunna återställa.
+Skriptet validerar Compose, bygger imagen före omstarten och återskapar containern. Pluginet, uppstartsskriptet och lägesprofilerna byggs in tillsammans. Efter en uppdatering av projektfilerna behöver du bygga om imagen. Data och lokalt tillstånd ligger kvar i `data/`. SteamCMD uppdaterar spelet under uppstart. Följ loggen och kontrollera pluginet efter uppdatering. Gör en backup av `data/state` och `.env` innan du uppdaterar en server du behöver kunna återställa.
 
 CounterStrikeSharp och Metamod har fasta releaseversioner i Dockerfile. Basimagen använder en flytande tagg tills en image har provkörts. Sätt `CS2_BASE_IMAGE` till den verifierade digesten i `.env` när du har den. SteamCMD hanterar spelbuilden separat.
 

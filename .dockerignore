@@ -6,6 +6,9 @@ config/**
 !config/modes/
 config/modes/**
 !config/modes/*.cfg
+!scripts/
+scripts/**
+!scripts/pre.sh
 !src/
 src/**
 !src/RepServer/
