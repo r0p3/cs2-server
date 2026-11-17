@@ -124,7 +124,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterEventHandler<EventPlayerTeam>((change, _) =>
         {
             if (change.Userid is { IsValid: true, IsBot: true, IsHLTV: false })
-                change.SetBool("silent", true);
+                change.Silent = true;
             return HookResult.Continue;
         }, HookMode.Pre);
         RegisterEventHandler<EventPlayerDisconnect>((connection, info) =>
