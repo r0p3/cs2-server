@@ -53,7 +53,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 
-Om automatisk botpåfyllning redan har fyllt servern, börja med `!kick_bot`. Kör sedan exempelvis `!set_bot_t 8` för att fylla på T, eller lägg till en bot i taget med `!add_bot_t`. Spelare och bots delar serverns 10 platser. `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Lägesprofilens botregler laddas igen vid kartbyte.
+Om automatisk botpåfyllning redan har fyllt servern, börja med `!kick_bot`. Kör sedan exempelvis `!set_bot_t 8` för att fylla på T, eller lägg till en bot i taget med `!add_bot_t`. Spelare och bots delar serverns 10 platser. De manuella botkommandona lämnar en plats ledig. `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
 
 ## Spellägen
 

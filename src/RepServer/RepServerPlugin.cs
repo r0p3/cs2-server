@@ -11,18 +11,26 @@ namespace RepServer;
 public sealed class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.2.4";
+    public override string ModuleVersion => "0.2.5";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
     private const string LastMapFile = "/var/lib/repserver/last-map";
     private const string Modes = "bot-game, bot-dm, bot-dm-pistol";
-    private const string BotTeamSettings = "bot_join_team any; mp_autoteambalance 0; mp_limitteams 0";
+    private const string BotTeamSettings = "bot_auto_vacate 1; bot_join_team any; mp_autoteambalance 0; mp_limitteams 0";
+    private const float BotFillInterval = 2.0f;
+    private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
     private string[] maps = [];
     private string activeMode = "bot-game";
     private string? pendingMode;
     private CounterStrikeSharp.API.Modules.Timers.Timer? botFillTimer;
+    private int? botFillRequesterSlot;
+
+    private static int PlayerLimit =>
+        int.TryParse(Environment.GetEnvironmentVariable("CS2_MAXPLAYERS"), out var configured) && configured > 0
+            ? Math.Min(configured, Server.MaxPlayers)
+            : Server.MaxPlayers;
 
     public override void Load(bool hotReload)
     {
@@ -42,7 +50,16 @@ public sealed class RepServerPlugin : BasePlugin
         RegisterListener<Listeners.OnMapStart>(map =>
         {
             botFillTimer = null;
+            botFillRequesterSlot = null;
             RememberMap(map);
+        });
+        RegisterListener<Listeners.OnClientDisconnect>(slot =>
+        {
+            if (botFillRequesterSlot == slot)
+            {
+                CancelBotFill();
+                Console.WriteLine("[RepServer] Botpåfyllningen avbröts eftersom admin kopplades bort.");
+            }
         });
         if (hotReload)
             RememberMap(Server.MapName);
@@ -191,10 +208,10 @@ public sealed class RepServerPlugin : BasePlugin
         if (!CheckAdmin(player, command))
             return;
 
-        botFillTimer?.Kill();
-        botFillTimer = null;
-        Execute(player, "bot_quota_mode normal; bot_kick all; bot_quota 0",
-            "Tar bort alla bots och stänger av automatisk påfyllning för kartan.");
+        CancelBotFill();
+        const string action = "bot_quota_mode normal; bot_kick all; bot_quota 0";
+        AnnounceCommand(player, action, "Tar bort alla bots och stänger av automatisk påfyllning för kartan.");
+        Server.NextWorldUpdate(() => Server.ExecuteCommand(action));
     }
 
     private void AddBot(CCSPlayerController? player, CommandInfo command, string botCommand, string team)
@@ -202,14 +219,20 @@ public sealed class RepServerPlugin : BasePlugin
         if (!CanAddBots(player, command))
             return;
 
-        if (Utilities.GetPlayers().Count(client => !client.IsHLTV) >= Server.MaxPlayers)
+        var clients = Utilities.GetPlayers();
+        if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
         {
-            command.ReplyToCommand("[RepServer] Servern är full. Använd !kick_bot om du vill rensa bots och lägga till dem manuellt.");
+            command.ReplyToCommand("[RepServer] Botgränsen är nådd. En plats hålls ledig för spelare.");
             return;
         }
 
-        Execute(player, $"{BotTeamSettings}; {botCommand}",
-            $"Begär en bot på {team}.");
+        AnnounceCommand(player, botCommand, $"Begär en bot på {team}.");
+        Server.NextWorldUpdate(() =>
+        {
+            var connected = Utilities.GetPlayers();
+            if (botFillTimer is null && connected.Count < PlayerLimit - ReservedPlayerSlots)
+                Server.ExecuteCommand(ManualBotCommand(botCommand, connected.Count(client => client.IsBot && !client.IsHLTV)));
+        });
     }
 
     private void SetBots(CCSPlayerController? player, CommandInfo command, CsTeam team)
@@ -219,49 +242,62 @@ public sealed class RepServerPlugin : BasePlugin
 
         if (command.ArgCount != 2 ||
             !int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out var target) ||
-            target < 1 || target > Server.MaxPlayers)
+            target < 1 || target > PlayerLimit)
         {
-            command.ReplyToCommand($"[RepServer] Ange ett heltal mellan 1 och {Server.MaxPlayers}.");
+            command.ReplyToCommand($"[RepServer] Ange ett heltal mellan 1 och {PlayerLimit}.");
             return;
         }
 
         var teamLabel = team == CsTeam.Terrorist ? "T" : "CT";
-        var clients = Utilities.GetPlayers().Where(client => !client.IsHLTV).ToArray();
+        var clients = Utilities.GetPlayers();
         var current = clients.Count(client => client.IsBot && client.TeamNum == (byte)team);
         if (current >= target)
         {
             command.ReplyToCommand($"[RepServer] {teamLabel} har redan {current} bots. Inga bots har tagits bort.");
             return;
         }
-        if (clients.Length >= Server.MaxPlayers)
+        if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
         {
-            command.ReplyToCommand($"[RepServer] Servern är full. {teamLabel} har {current} av {target} bots. Använd !kick_bot för att börja om.");
+            command.ReplyToCommand($"[RepServer] Botgränsen är nådd. {teamLabel} har {current} av {target} bots. Använd !kick_bot för att börja om.");
             return;
         }
 
         var botCommand = team == CsTeam.Terrorist ? "bot_add_t" : "bot_add_ct";
-        var quota = clients.Count(client => client.IsBot).ToString(CultureInfo.InvariantCulture);
-        Execute(player, $"{BotTeamSettings}; bot_quota_mode normal; bot_quota {quota}; {botCommand}",
-            $"Försöker fylla {teamLabel} till {target} bots.");
-        botFillTimer = AddTimer(1.0f, () => CheckBotFill(team, teamLabel, botCommand, target, current), TimerFlags.STOP_ON_MAPCHANGE);
+        AnnounceCommand(player, $"{botCommand} (mål: {target})", $"Försöker fylla {teamLabel} till {target} bots.");
+        botFillRequesterSlot = player?.Slot;
+
+        // Bot creation can stall a game tick. Keep it outside the client's chat packet handler.
+        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, teamLabel, botCommand, target, previous: null), TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    private void CheckBotFill(CsTeam team, string teamLabel, string botCommand, int target, int previous)
+    private void CheckBotFill(CsTeam team, string teamLabel, string botCommand, int target, int? previous)
     {
         botFillTimer = null;
-        var clients = Utilities.GetPlayers().Where(client => !client.IsHLTV).ToArray();
+        var clients = Utilities.GetPlayers();
         var count = clients.Count(client => client.IsBot && client.TeamNum == (byte)team);
         if (count >= target)
             ReportBotFill($"{teamLabel} har nu {count} bots.");
-        else if (clients.Length >= Server.MaxPlayers)
-            ReportBotFill($"Servern är full. {teamLabel} har {count} av {target} bots.");
-        else if (count <= previous)
+        else if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
+            ReportBotFill($"En plats hålls ledig för spelare. {teamLabel} har {count} av {target} bots.");
+        else if (previous is int previousCount && count <= previousCount)
             ReportBotFill($"Ingen ytterligare bot kunde läggas till. {teamLabel} har {count} av {target} bots.");
         else
         {
-            Server.ExecuteCommand(botCommand);
-            botFillTimer = AddTimer(1.0f, () => CheckBotFill(team, teamLabel, botCommand, target, count), TimerFlags.STOP_ON_MAPCHANGE);
+            botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, teamLabel, botCommand, target, count), TimerFlags.STOP_ON_MAPCHANGE);
+            Server.ExecuteCommand(previous is null
+                ? ManualBotCommand(botCommand, clients.Count(client => client.IsBot && !client.IsHLTV))
+                : botCommand);
         }
+    }
+
+    private static string ManualBotCommand(string botCommand, int currentBots) =>
+        $"{BotTeamSettings}; bot_quota_mode normal; bot_quota {currentBots.ToString(CultureInfo.InvariantCulture)}; {botCommand}";
+
+    private void CancelBotFill()
+    {
+        botFillTimer?.Kill();
+        botFillTimer = null;
+        botFillRequesterSlot = null;
     }
 
     private bool CanAddBots(CCSPlayerController? player, CommandInfo command)
@@ -275,8 +311,9 @@ public sealed class RepServerPlugin : BasePlugin
         return false;
     }
 
-    private static void ReportBotFill(string message)
+    private void ReportBotFill(string message)
     {
+        botFillRequesterSlot = null;
         Console.WriteLine("[RepServer] " + message);
         Server.PrintToChatAll("[RepServer] " + message);
     }
@@ -332,10 +369,15 @@ public sealed class RepServerPlugin : BasePlugin
 
     private static void Execute(CCSPlayerController? player, string action, string message)
     {
+        AnnounceCommand(player, action, message);
+        Server.ExecuteCommand(action);
+    }
+
+    private static void AnnounceCommand(CCSPlayerController? player, string action, string message)
+    {
         var actor = player?.AuthorizedSteamID?.SteamId64.ToString(CultureInfo.InvariantCulture) ?? "console";
         Console.WriteLine($"[RepServer] {actor}: {action}");
         Server.PrintToChatAll("[RepServer] " + message);
-        Server.ExecuteCommand(action);
     }
 
     private static bool CheckAdmin(CCSPlayerController? player, CommandInfo command)
