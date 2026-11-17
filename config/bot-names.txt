@@ -6,7 +6,7 @@ Louis Litt | rifle
 Morgan Karlsson | rifle
 Ola-Conny | rifle
 Rövfett Arselberg | rifle
-Greta Sugberg | rifle
+Greta Sugberg | sniper
 Le Fet | rifle
 Heckliga Hecklish | rifle
 Rolf Mjunstedt | sniper
@@ -20,4 +20,4 @@ erk | rifle
 mark | rifle
 Tjocka Bävlingen | rifle
 Christian Green | rifle
-Diskvatten | sniper
+Diskvatten | rifle

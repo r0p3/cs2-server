@@ -4,7 +4,7 @@ FROM ${CS2_BASE_IMAGE} AS upstream
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /build
-RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3 unzip && rm -rf /var/lib/apt/lists/*
 
 # Keep the runtime and the API used at compile time on the same release.
 ADD --checksum=sha256:f0653332a517c9edbaf8d6bfeb2ffec5aa730638ebd5e568d9753fa1063ba68e https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.380/counterstrikesharp-with-runtime-linux-1.0.380.zip /tmp/css.zip
@@ -21,6 +21,9 @@ COPY --from=upstream /home/steam/entry.sh /build/upstream-entry.sh
 RUN grep -Fxq 'source "${STEAMAPPDIR}/pre.sh"' /build/upstream-entry.sh \
     && sed 's|^source "\${STEAMAPPDIR}/pre\.sh"$|source /opt/repserver/pre.sh|' /build/upstream-entry.sh > /bundle/entry.sh \
     && bash -n /bundle/entry.sh
+
+COPY scripts/build-bot-profile.py config/bot-names.txt /build/
+RUN python3 /build/build-bot-profile.py /build/bot-names.txt /bundle/botprofile.vpk
 
 FROM upstream
 COPY --from=build /bundle/ /opt/repserver/

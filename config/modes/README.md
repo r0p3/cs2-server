@@ -7,7 +7,7 @@
 | `!mode bot-dm` | `bot_dm.cfg` | FFA Deathmatch |
 | `!mode bot-dm-pistol` | `bot_dm_pistol.cfg` | FFA Deathmatch med pistoler och kniv |
 
-De två befintliga matchfilerna behåller sina matchregler. `bot_quota_mode fill` fyller upp med bots till totalt 10 deltagare. `CS2_MAXPLAYERS` i `.env` styr hur många platser servern har för spelare och bots, inklusive manuellt tillagda bots.
+RepServer fyller från den egna botlistan upp till 10 deltagare när första spelaren spawnar. `CS2_MAXPLAYERS` i `.env` styr hur många platser servern har för spelare och bots, inklusive manuellt tillagda bots.
 
 I båda matchprofilerna spelar bottarna på Expert (`bot_difficulty 3`) med fast svårighetsgrad. De får använda granater och fortsätter försöka spela bombmålet även om de har mänskliga lagkamrater. Köpgränsen är 3 700. [CS2:s konsolvariabler](https://cs2.poggu.me/dumped-data/convar-list/)
 

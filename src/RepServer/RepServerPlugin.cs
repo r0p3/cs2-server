@@ -6,13 +6,14 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
+using CounterStrikeSharp.API.ValveConstants.Protobuf;
 
 namespace RepServer;
 
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.3.6";
+    public override string ModuleVersion => "0.4.0";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -30,6 +31,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private string? pendingMode;
     private CounterStrikeSharp.API.Modules.Timers.Timer? botFillTimer;
     private int? botFillRequesterSlot;
+    private bool autoRosterPending = true;
 
     private static int PlayerLimit =>
         int.TryParse(Environment.GetEnvironmentVariable("CS2_MAXPLAYERS"), out var configured) && configured > 0
@@ -58,6 +60,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         {
             botFillTimer = null;
             botFillRequesterSlot = null;
+            autoRosterPending = true;
             RememberMap(map);
         });
         RegisterListener<Listeners.OnClientDisconnect>(slot =>
@@ -69,7 +72,32 @@ public sealed partial class RepServerPlugin : BasePlugin
             }
         });
         if (hotReload)
+        {
+            autoRosterPending = false;
             RememberMap(Server.MapName);
+        }
+
+        RegisterEventHandler<EventPlayerSpawn>((@event, _) =>
+        {
+            if (autoRosterPending && @event.Userid is { IsValid: true, IsBot: false, IsHLTV: false } player)
+            {
+                autoRosterPending = false;
+                var team = activeMode == "bot-game-t" ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
+                var humans = Utilities.GetPlayers().Count(client => !client.IsBot && !client.IsHLTV);
+                var target = Math.Min(10, PlayerLimit - ReservedPlayerSlots) - humans;
+                if (target > 0 && botFillTimer is null)
+                    StartBotFill(null, team, target);
+            }
+            return HookResult.Continue;
+        });
+        RegisterListener<Listeners.OnClientPutInServer>(slot => Server.NextWorldUpdate(() =>
+        {
+            if (Utilities.GetPlayerFromSlot(slot) is { IsValid: true, IsBot: true, IsHLTV: false } bot &&
+                FindBotProfile(bot.PlayerName) is null)
+                RejectUnknownBot(bot);
+        }));
+        if (activeMode != "bot-dm-pistol")
+            RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
 
         RegisterMenuListeners();
 
@@ -117,15 +145,13 @@ public sealed partial class RepServerPlugin : BasePlugin
             RunMatchCommand(player, command.ReplyToCommand, "mp_unpause_match", "Begär att matchen återupptas."), admin: true);
         RegisterChatCommand("kick_bot", "Ta bort alla bots och stäng av påfyllning", (player, command) => KickBots(player, command.ReplyToCommand), admin: true);
         RegisterChatCommand("add_bot_t", "Lägg till en bot på T", (player, command) =>
-            AddBot(player, command.ReplyToCommand, "bot_add_t", "T"), admin: true);
+            AddBot(player, command.ReplyToCommand, CsTeam.Terrorist), admin: true);
         RegisterChatCommand("add_bot_ct", "Lägg till en bot på CT", (player, command) =>
-            AddBot(player, command.ReplyToCommand, "bot_add_ct", "CT"), admin: true);
+            AddBot(player, command.ReplyToCommand, CsTeam.CounterTerrorist), admin: true);
         RegisterChatCommand("set_bot_t", "Fyll på T upp till valt antal bots", (player, command) =>
             SetBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "<antal>");
         RegisterChatCommand("set_bot_ct", "Fyll på CT upp till valt antal bots", (player, command) =>
             SetBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "<antal>");
-        RegisterChatCommand("petter", "Testa namnet Petter Toivonen på en bot", (player, command) =>
-            RenameTestBot(player, command.ReplyToCommand, "Petter Toivonen"), admin: true);
         RegisterChatCommand("bot_roster", "Förhandsvisa botlistan med en sniper per fem", (_, command) =>
         {
             if (command.ArgCount != 2 ||
@@ -244,45 +270,46 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (!CheckAdmin(player, reply))
             return;
 
+        autoRosterPending = false;
         CancelBotFill();
-        const string action = "bot_quota_mode normal; bot_kick all; bot_quota 0";
-        AnnounceCommand(player, action, "Tar bort alla bots och stänger av automatisk påfyllning för kartan.");
-        Server.NextWorldUpdate(() => Server.ExecuteCommand(action));
+        const string action = "bot_quota_mode normal; bot_quota 0; bot_kick";
+        AnnounceCommand(player, action, "Tar bort alla bottar.");
+        Server.NextWorldUpdate(() =>
+        {
+            Server.ExecuteCommand(action);
+            foreach (var bot in CurrentBots())
+            {
+                if (bot.IsValid)
+                    bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
+            }
+        });
     }
 
-    private void RenameTestBot(CCSPlayerController? player, Action<string> reply, string testName)
+    private static CCSPlayerController[] CurrentBots() =>
+        Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
+
+    private BotProfile? FindBotProfile(string name) =>
+        botProfiles.FirstOrDefault(profile => string.Equals(profile.Name, name, StringComparison.Ordinal));
+
+    private static void RejectUnknownBot(CCSPlayerController bot)
     {
-        if (!CheckAdmin(player, reply))
-            return;
+        Console.Error.WriteLine($"[RepServer] Okänd bot i den laddade botprofilen: {bot.PlayerName}. Botten tas bort.");
+        Server.ExecuteCommand("bot_quota 0");
+        bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
+    }
 
-        var profile = botProfiles.FirstOrDefault(entry => string.Equals(entry.Name, testName, StringComparison.OrdinalIgnoreCase));
-        if (profile is null)
+    private HookResult RestrictSniperWeapons(EventItemPickup pickup, GameEventInfo info)
+    {
+        if (pickup.Userid is { IsValid: true, IsBot: true, IsHLTV: false } bot &&
+            FindBotProfile(bot.PlayerName)?.Role == "rifle")
         {
-            reply("[RepServer] Namnet finns inte i botlistan.");
-            return;
+            var weapon = pickup.Item;
+            if (weapon.StartsWith("weapon_", StringComparison.Ordinal))
+                weapon = weapon[7..];
+            if (weapon is "awp" or "ssg08" or "scar20" or "g3sg1")
+                bot.RemoveItemByDesignerName("weapon_" + weapon);
         }
-
-        var bots = Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
-        if (bots.Any(bot => string.Equals(bot.PlayerName, profile.Name, StringComparison.OrdinalIgnoreCase)))
-        {
-            reply($"[RepServer] {profile.Name} finns redan på servern.");
-            return;
-        }
-
-        var bot = bots.FirstOrDefault(candidate => !botProfiles.Any(entry =>
-            string.Equals(entry.Name, candidate.PlayerName, StringComparison.OrdinalIgnoreCase)));
-        if (bot is null)
-        {
-            reply("[RepServer] Ingen ledig bot för namnbyte. Lägg först till en ny bot.");
-            return;
-        }
-
-        var previousName = bot.PlayerName;
-        bot.PlayerName = profile.Name;
-        Utilities.SetStateChanged(bot, "CBasePlayerController", "m_iszPlayerName");
-        var appliedName = bot.PlayerName;
-        Console.WriteLine($"[RepServer] Botnamnstest, plats {bot.Slot}: {previousName} -> {appliedName}");
-        reply($"[RepServer] Servern rapporterar namnet {appliedName}. Kontrollera resultattavlan med Tab.");
+        return HookResult.Continue;
     }
 
     private void LoadBotProfiles()
@@ -300,7 +327,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             var fields = trimmed.Split('|', 2, StringSplitOptions.TrimEntries);
             var name = fields[0];
             var role = fields.Length == 2 ? fields[1].ToLowerInvariant() : "rifle";
-            if (name.Length == 0 || name.Any(char.IsControl) || Encoding.UTF8.GetByteCount(name) > 31 ||
+            if (name.Length == 0 || name.Any(c => char.IsControl(c) || c is '"' or '\\' or ';') || Encoding.UTF8.GetByteCount(name) > 31 ||
                 role is not ("rifle" or "sniper") || !seen.Add(name))
             {
                 Console.Error.WriteLine($"[RepServer] Ogiltigt eller upprepat botnamn i bot-names.txt på rad {lineNumber}.");
@@ -354,33 +381,15 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
     }
 
-    private Queue<BotProfile> RandomizedBots(string role)
+    private Queue<BotProfile> RandomizedBots(string role, HashSet<string>? inUse = null)
     {
-        var candidates = botProfiles.Where(profile => profile.Role == role).ToArray();
+        var candidates = botProfiles.Where(profile => profile.Role == role && inUse?.Contains(profile.Name) != true).ToArray();
         Random.Shared.Shuffle(candidates.AsSpan());
         return new Queue<BotProfile>(candidates.OrderByDescending(profile => priorityBotNames.Contains(profile.Name)));
     }
 
-    private void AddBot(CCSPlayerController? player, Action<string> reply, string botCommand, string team)
-    {
-        if (!CanAddBots(player, reply))
-            return;
-
-        var clients = Utilities.GetPlayers();
-        if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
-        {
-            reply("[RepServer] Botgränsen är nådd. En plats hålls ledig för spelare.");
-            return;
-        }
-
-        AnnounceCommand(player, botCommand, $"Begär en bot på {team}.");
-        Server.NextWorldUpdate(() =>
-        {
-            var connected = Utilities.GetPlayers();
-            if (botFillTimer is null && connected.Count < PlayerLimit - ReservedPlayerSlots)
-                Server.ExecuteCommand(ManualBotCommand(botCommand, connected.Count(client => client.IsBot && !client.IsHLTV)));
-        });
-    }
+    private void AddBot(CCSPlayerController? player, Action<string> reply, CsTeam team) =>
+        SetBots(player, reply, team, CurrentBots().Count(bot => bot.TeamNum == (byte)team) + 1);
 
     private void SetBotsFromCommand(CCSPlayerController? player, CommandInfo command, CsTeam team)
     {
@@ -394,57 +403,87 @@ public sealed partial class RepServerPlugin : BasePlugin
     {
         if (!CanAddBots(player, reply))
             return;
-
         if (target < 1 || target > PlayerLimit)
         {
             reply($"[RepServer] Ange ett heltal mellan 1 och {PlayerLimit}.");
             return;
         }
 
-        var teamLabel = team == CsTeam.Terrorist ? "T" : "CT";
-        var clients = Utilities.GetPlayers();
-        var current = clients.Count(client => client.IsBot && client.TeamNum == (byte)team);
+        var current = CurrentBots().Count(bot => bot.TeamNum == (byte)team);
         if (current >= target)
         {
-            reply($"[RepServer] {teamLabel} har redan {current} bots. Inga bots har tagits bort.");
+            reply($"[RepServer] {BotTeamLabel(team)} har redan {current} bottar.");
+            return;
+        }
+
+        autoRosterPending = false;
+        StartBotFill(player, team, target);
+    }
+
+    private static string BotTeamLabel(CsTeam team) => team == CsTeam.Terrorist ? "T" : "CT";
+
+    private void StartBotFill(CCSPlayerController? player, CsTeam team, int target)
+    {
+        var teamLabel = BotTeamLabel(team);
+        AnnounceCommand(player, $"Botlista: {teamLabel}, mål {target}", $"Fyller {teamLabel} med upp till {target} bottar från namnlistan.");
+        botFillRequesterSlot = player?.Slot;
+        // CS2 must finish the chat packet before it creates a bot.
+        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, null), TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private void CheckBotFill(CsTeam team, int target, string? expected)
+    {
+        botFillTimer = null;
+        var clients = Utilities.GetPlayers();
+        var bots = clients.Where(client => client.IsBot && !client.IsHLTV).ToArray();
+        var teamLabel = BotTeamLabel(team);
+        var teamCount = bots.Count(bot => bot.TeamNum == (byte)team);
+        var used = bots.Select(bot => bot.PlayerName).ToHashSet(StringComparer.Ordinal);
+        var unknown = bots.Where(bot => FindBotProfile(bot.PlayerName) is null).ToArray();
+
+        if (unknown.Length > 0)
+        {
+            foreach (var bot in unknown)
+                RejectUnknownBot(bot);
+            ReportBotFill("Påfyllningen avbröts. CS2 använde ett namn utanför listan.");
+            return;
+        }
+        if (expected is not null && !bots.Any(bot => bot.PlayerName == expected && bot.TeamNum == (byte)team))
+        {
+            ReportBotFill($"CS2 lade inte till {expected} på {teamLabel}. {teamCount} av {target} bottar.");
+            return;
+        }
+        if (teamCount >= target)
+        {
+            ReportBotFill($"{teamLabel} har nu {teamCount} bottar från listan.");
             return;
         }
         if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
         {
-            reply($"[RepServer] Botgränsen är nådd. {teamLabel} har {current} av {target} bots. Använd !kick_bot för att börja om.");
+            ReportBotFill($"En plats hålls ledig. {teamLabel} har {teamCount} av {target} bottar.");
+            return;
+        }
+
+        var actualSnipers = bots.Count(bot => FindBotProfile(bot.PlayerName)?.Role == "sniper");
+        var requiredSnipers = (bots.Length + 1) / 5;
+        if (actualSnipers > requiredSnipers || actualSnipers + 1 < requiredSnipers)
+        {
+            ReportBotFill("Den nuvarande uppställningen bryter mot sniperregeln. Kör !kick_bot och fyll på igen.");
+            return;
+        }
+
+        var role = actualSnipers < requiredSnipers ? "sniper" : "rifle";
+        if (!RandomizedBots(role, used).TryDequeue(out var profile))
+        {
+            ReportBotFill($"Inget oanvänt {role}-namn kvar. {teamLabel} har {teamCount} av {target} bottar.");
             return;
         }
 
         var botCommand = team == CsTeam.Terrorist ? "bot_add_t" : "bot_add_ct";
-        AnnounceCommand(player, $"{botCommand} (mål: {target})", $"Försöker fylla {teamLabel} till {target} bots.");
-        botFillRequesterSlot = player?.Slot;
-
-        // Bot creation can stall a game tick. Keep it outside the client's chat packet handler.
-        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, teamLabel, botCommand, target, previous: null), TimerFlags.STOP_ON_MAPCHANGE);
+        var quota = bots.Length.ToString(CultureInfo.InvariantCulture);
+        botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, profile.Name), TimerFlags.STOP_ON_MAPCHANGE);
+        Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_quota {quota}; {botCommand} \"{profile.Name}\"");
     }
-
-    private void CheckBotFill(CsTeam team, string teamLabel, string botCommand, int target, int? previous)
-    {
-        botFillTimer = null;
-        var clients = Utilities.GetPlayers();
-        var count = clients.Count(client => client.IsBot && client.TeamNum == (byte)team);
-        if (count >= target)
-            ReportBotFill($"{teamLabel} har nu {count} bots.");
-        else if (clients.Count >= PlayerLimit - ReservedPlayerSlots)
-            ReportBotFill($"En plats hålls ledig för spelare. {teamLabel} har {count} av {target} bots.");
-        else if (previous is int previousCount && count <= previousCount)
-            ReportBotFill($"Ingen ytterligare bot kunde läggas till. {teamLabel} har {count} av {target} bots.");
-        else
-        {
-            botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, teamLabel, botCommand, target, count), TimerFlags.STOP_ON_MAPCHANGE);
-            Server.ExecuteCommand(previous is null
-                ? ManualBotCommand(botCommand, clients.Count(client => client.IsBot && !client.IsHLTV))
-                : botCommand);
-        }
-    }
-
-    private static string ManualBotCommand(string botCommand, int currentBots) =>
-        $"{BotTeamSettings}; bot_quota_mode normal; bot_quota {currentBots.ToString(CultureInfo.InvariantCulture)}; {botCommand}";
 
     private void CancelBotFill()
     {

@@ -41,20 +41,22 @@ repserver_install() {
     [[ -r "$gameinfo" && -r /opt/repserver/maps.txt ]] || return 1
     cp -R /opt/repserver/addons "$game_dir/" || return 1
 
-    if ! grep -Eq '^[[:space:]]*Game[[:space:]]+csgo/addons/metamod([[:space:]]|$)' "$gameinfo"; then
-        temporary=$(mktemp "$game_dir/.gameinfo.XXXXXX") || return 1
-        if ! awk '
-            { print }
-            !inserted && $1 == "Game_LowViolence" && $2 == "csgo_lv" {
-                print "            Game csgo/addons/metamod"
-                inserted = 1
-            }
-            END { if (!inserted) exit 1 }
-        ' "$gameinfo" > "$temporary" || ! chmod --reference="$gameinfo" "$temporary" ||
-            ! mv -f "$temporary" "$gameinfo"; then
-            rm -f "$temporary"
-            return 1
-        fi
+    cp /opt/repserver/botprofile.vpk "$game_dir/repserver-botprofile.vpk" || return 1
+
+    temporary=$(mktemp "$game_dir/.gameinfo.XXXXXX") || return 1
+    if ! awk '
+        $1 == "Game" && ($2 == "csgo/addons/metamod" || $2 == "csgo/repserver-botprofile.vpk") { next }
+        { print }
+        !inserted && $1 == "Game_LowViolence" && $2 == "csgo_lv" {
+            print "            Game csgo/repserver-botprofile.vpk"
+            print "            Game csgo/addons/metamod"
+            inserted = 1
+        }
+        END { if (!inserted) exit 1 }
+    ' "$gameinfo" > "$temporary" || ! chmod --reference="$gameinfo" "$temporary" ||
+        ! mv -f "$temporary" "$gameinfo"; then
+        rm -f "$temporary"
+        return 1
     fi
 }
 

@@ -11,6 +11,7 @@ config/modes/**
 !scripts/
 scripts/**
 !scripts/pre.sh
+!scripts/build-bot-profile.py
 !src/
 src/**
 !src/RepServer/
