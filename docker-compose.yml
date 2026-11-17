@@ -1,0 +1,57 @@
+services:
+  cs2:
+    build:
+      context: .
+      args:
+        CS2_BASE_IMAGE: ${CS2_BASE_IMAGE:-joedwards32/cs2:latest}
+    platform: linux/amd64
+    container_name: cs2-dedicated
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    environment:
+      SRCDS_TOKEN: ${SRCDS_TOKEN:?Set SRCDS_TOKEN in .env}
+      CS2_RCONPW: ${CS2_RCONPW:?Set CS2_RCONPW in .env}
+      CS2_PW: ${CS2_PW:?Set CS2_PW in .env}
+      CS2_SERVERNAME: ${CS2_SERVERNAME:-Repserver}
+      CS2_STARTMAP: ${CS2_STARTMAP:-de_inferno}
+      CS2_PORT: "27015"
+      CS2_MAXPLAYERS: "10"
+      CS2_GAMETYPE: "0"
+      CS2_GAMEMODE: "1"
+      CS2_MAPGROUP: mg_active
+      CS2_BOT_DIFFICULTY: "3"
+      CS2_BOT_QUOTA: "10"
+      CS2_BOT_QUOTA_MODE: fill
+      CS2_LAN: "0"
+      CS2_CHEATS: "0"
+      CS2_SERVER_HIBERNATE: "0"
+      STEAMAPPVALIDATE: "0"
+      DEBUG: "0"
+    ports:
+      - "${CS2_PUBLIC_PORT:-27015}:27015/udp"
+      - "127.0.0.1:${CS2_PUBLIC_PORT:-27015}:27015/tcp"
+    volumes:
+      - type: bind
+        source: ./data/server
+        target: /home/steam/cs2-dedicated
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./data/state
+        target: /var/lib/repserver
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./scripts/pre.sh
+        target: /home/steam/cs2-dedicated/pre.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stdin_open: true
+    tty: true

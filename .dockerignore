@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!config/
+config/**
+!config/maps.txt
+!src/
+src/**
+!src/RepServer/
+src/RepServer/**
+!src/RepServer/*.cs
+!src/RepServer/*.csproj
