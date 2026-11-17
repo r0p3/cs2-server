@@ -47,8 +47,19 @@ public sealed partial class RepServerPlugin
         if (menus.ContainsKey(player.Slot))
             CloseMenu(player.Slot);
         else
-            OpenMainMenu(player);
+            QueueOpenMenu(player);
         return HookResult.Handled;
+    }
+
+    private void QueueOpenMenu(CCSPlayerController player)
+    {
+        var slot = player.Slot;
+        var identity = player.UserId;
+        Server.NextWorldUpdate(() =>
+        {
+            if (Utilities.GetPlayerFromSlot(slot) is { IsValid: true } current && current.UserId == identity)
+                OpenMainMenu(current);
+        });
     }
 
     private void OpenMainMenu(CCSPlayerController player)

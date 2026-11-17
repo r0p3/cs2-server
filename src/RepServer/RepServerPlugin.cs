@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.0";
+    public override string ModuleVersion => "0.4.1";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -21,6 +21,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private const string Modes = "bot-game, bot-dm, bot-dm-pistol";
     private const string BotTeamSettings = "bot_auto_vacate 1; bot_join_team any; mp_autoteambalance 0; mp_limitteams 0";
     private const float BotFillInterval = 2.0f;
+    private const float JoinGracePeriod = 5.0f;
     private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
     private string[] maps = [];
@@ -32,6 +33,8 @@ public sealed partial class RepServerPlugin : BasePlugin
     private CounterStrikeSharp.API.Modules.Timers.Timer? botFillTimer;
     private int? botFillRequesterSlot;
     private bool autoRosterPending = true;
+    private readonly HashSet<int> connectingClients = new();
+    private double botSpawnReadyAt;
 
     private static int PlayerLimit =>
         int.TryParse(Environment.GetEnvironmentVariable("CS2_MAXPLAYERS"), out var configured) && configured > 0
@@ -61,14 +64,17 @@ public sealed partial class RepServerPlugin : BasePlugin
             botFillTimer = null;
             botFillRequesterSlot = null;
             autoRosterPending = true;
+            botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
             RememberMap(map);
         });
+        RegisterListener<Listeners.OnClientConnected>(slot => connectingClients.Add(slot));
         RegisterListener<Listeners.OnClientDisconnect>(slot =>
         {
+            connectingClients.Remove(slot);
             if (botFillRequesterSlot == slot)
             {
                 CancelBotFill();
-                Console.WriteLine("[RepServer] Botpåfyllningen avbröts eftersom admin kopplades bort.");
+                Console.WriteLine("[RepServer] Botpåfyllningen avbröts eftersom spelaren kopplades bort.");
             }
         });
         if (hotReload)
@@ -77,24 +83,14 @@ public sealed partial class RepServerPlugin : BasePlugin
             RememberMap(Server.MapName);
         }
 
-        RegisterEventHandler<EventPlayerSpawn>((@event, _) =>
-        {
-            if (autoRosterPending && @event.Userid is { IsValid: true, IsBot: false, IsHLTV: false } player)
-            {
-                autoRosterPending = false;
-                var team = activeMode == "bot-game-t" ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
-                var humans = Utilities.GetPlayers().Count(client => !client.IsBot && !client.IsHLTV);
-                var target = Math.Min(10, PlayerLimit - ReservedPlayerSlots) - humans;
-                if (target > 0 && botFillTimer is null)
-                    StartBotFill(null, team, target);
-            }
-            return HookResult.Continue;
-        });
         RegisterListener<Listeners.OnClientPutInServer>(slot => Server.NextWorldUpdate(() =>
         {
-            if (Utilities.GetPlayerFromSlot(slot) is { IsValid: true, IsBot: true, IsHLTV: false } bot &&
-                FindBotProfile(bot.PlayerName) is null)
-                RejectUnknownBot(bot);
+            if (Utilities.GetPlayerFromSlot(slot) is not { IsValid: true } client)
+                return;
+            if (client.IsHLTV || client.IsBot)
+                connectingClients.Remove(slot);
+            if (client.IsBot && !client.IsHLTV && FindBotProfile(client.PlayerName) is null)
+                RejectUnknownBot(client);
         }));
         if (activeMode != "bot-dm-pistol")
             RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
@@ -122,7 +118,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterChatCommand("menu", "Öppna RepServer-menyn", (player, command) =>
         {
             if (player is { IsValid: true, IsBot: false, IsHLTV: false })
-                OpenMainMenu(player);
+                QueueOpenMenu(player);
             else
                 command.ReplyToCommand("[RepServer] Öppna menyn i spelet med !.");
         });
@@ -173,8 +169,14 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         RegisterEventHandler<EventPlayerConnectFull>((@event, _) =>
         {
-            if (@event.Userid is { IsValid: true, IsBot: false, IsHLTV: false } player)
+            if (@event.Userid is { IsValid: true } player)
             {
+                connectingClients.Remove(player.Slot);
+                if (player.IsBot || player.IsHLTV)
+                    return HookResult.Continue;
+
+                botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
+                ScheduleInitialFill(player);
                 player.PrintToChat($"[RepServer] Läge: {ModeLabel(activeMode)} | karta: {Server.MapName}");
                 player.PrintToChat("[RepServer] Skriv ! för att öppna menyn.");
                 foreach (var line in joinLines)
@@ -422,6 +424,40 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private static string BotTeamLabel(CsTeam team) => team == CsTeam.Terrorist ? "T" : "CT";
 
+    private void ScheduleInitialFill(CCSPlayerController player)
+    {
+        if (!autoRosterPending || botFillTimer is not null)
+            return;
+
+        autoRosterPending = false;
+        botFillRequesterSlot = player.Slot;
+        botFillTimer = AddTimer(JoinGracePeriod, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private bool CanSpawnBots() => connectingClients.Count == 0 && Server.EngineTime >= botSpawnReadyAt;
+
+    private void StartInitialFillWhenReady()
+    {
+        if (!CanSpawnBots())
+        {
+            botFillTimer = AddTimer(BotFillInterval, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
+            return;
+        }
+
+        var humans = Utilities.GetPlayers().Where(client => !client.IsBot && !client.IsHLTV).ToArray();
+        var requester = humans.FirstOrDefault(client => client.Slot == botFillRequesterSlot);
+        var target = Math.Min(10, PlayerLimit - ReservedPlayerSlots) - humans.Length;
+        if (requester is null || target < 1)
+        {
+            botFillTimer = null;
+            botFillRequesterSlot = null;
+            return;
+        }
+
+        var team = activeMode == "bot-game-t" ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
+        StartBotFill(requester, team, target);
+    }
+
     private void StartBotFill(CCSPlayerController? player, CsTeam team, int target)
     {
         var teamLabel = BotTeamLabel(team);
@@ -433,6 +469,12 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void CheckBotFill(CsTeam team, int target, string? expected)
     {
+        if (!CanSpawnBots())
+        {
+            botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, expected), TimerFlags.STOP_ON_MAPCHANGE);
+            return;
+        }
+
         botFillTimer = null;
         var clients = Utilities.GetPlayers();
         var bots = clients.Where(client => client.IsBot && !client.IsHLTV).ToArray();
