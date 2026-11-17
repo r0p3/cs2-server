@@ -11,7 +11,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.3.0";
+    public override string ModuleVersion => "0.3.1";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -117,6 +117,8 @@ public sealed partial class RepServerPlugin : BasePlugin
             SetBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "<antal>");
         RegisterChatCommand("set_bot_ct", "Fyll på CT upp till valt antal bots", (player, command) =>
             SetBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "<antal>");
+        RegisterChatCommand("petter", "Testa namnet Petter Toivonen på en bot", (player, command) =>
+            RenameTestBot(player, command.ReplyToCommand), admin: true);
         RegisterChatCommand("live", "Avsluta uppvärmningen i bot-game", (player, command) => StartMatch(player, command.ReplyToCommand), admin: true);
 
         var joinLines = commands.GroupBy(entry => entry.Admin)
@@ -227,6 +229,34 @@ public sealed partial class RepServerPlugin : BasePlugin
         const string action = "bot_quota_mode normal; bot_kick all; bot_quota 0";
         AnnounceCommand(player, action, "Tar bort alla bots och stänger av automatisk påfyllning för kartan.");
         Server.NextWorldUpdate(() => Server.ExecuteCommand(action));
+    }
+
+    private static void RenameTestBot(CCSPlayerController? player, Action<string> reply)
+    {
+        if (!CheckAdmin(player, reply))
+            return;
+
+        const string testName = "Petter Toivonen";
+        var bots = Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
+        if (bots.Any(bot => bot.PlayerName == testName))
+        {
+            reply($"[RepServer] {testName} finns redan på servern.");
+            return;
+        }
+
+        var bot = bots.FirstOrDefault();
+        if (bot is null)
+        {
+            reply("[RepServer] Lägg först till en bot med !add_bot_t eller !add_bot_ct.");
+            return;
+        }
+
+        var previousName = bot.PlayerName;
+        bot.PlayerName = testName;
+        Utilities.SetStateChanged(bot, "CBasePlayerController", "m_iszPlayerName");
+        var appliedName = bot.PlayerName;
+        Console.WriteLine($"[RepServer] Botnamnstest, plats {bot.Slot}: {previousName} -> {appliedName}");
+        reply($"[RepServer] Servern rapporterar namnet {appliedName}. Kontrollera resultattavlan med Tab.");
     }
 
     private void AddBot(CCSPlayerController? player, Action<string> reply, string botCommand, string team)

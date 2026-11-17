@@ -55,6 +55,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 | `!kick_bot` | Admin | Ta bort alla bots och stäng av automatisk botpåfyllning på aktuell karta |
 | `!add_bot_t`, `!add_bot_ct` | Admin | Lägg till en bot på T respektive CT om det finns plats |
 | `!set_bot_t <antal>`, `!set_bot_ct <antal>` | Admin | Fyll på valt lag med bots upp till antalet du anger, så långt platserna räcker |
+| `!petter` | Admin | Prova namnet Petter Toivonen på en befintlig bot och kontrollera med Tab |
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 

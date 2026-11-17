@@ -9,4 +9,6 @@
 
 De två befintliga matchfilerna behåller sina matchregler. `bot_quota_mode fill` fyller upp med bots till totalt 10 deltagare. `CS2_MAXPLAYERS` i `.env` styr hur många platser servern har för spelare och bots, inklusive manuellt tillagda bots.
 
+I båda matchprofilerna spelar bottarna på Expert (`bot_difficulty 3`) med fast svårighetsgrad. De får använda granater och fortsätter försöka spela bombmålet även om de har mänskliga lagkamrater. Köpgränsen är 3 700. [CS2:s konsolvariabler](https://cs2.poggu.me/dumped-data/convar-list/)
+
 Docker bygger in filerna i imagen. Uppstartsskriptet kopierar dem till spelets `cfg/repserver/` och lägger till en `exec` i respektive spelläges serverkonfiguration. Lägg egna ändringar i dessa profiler och kör `./scripts/update.sh` efter uppdatering.
