@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.3";
+    public override string ModuleVersion => "0.4.5";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -115,6 +115,25 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
 
         RegisterMenuListeners();
+        RegisterEventHandler<EventPlayerConnect>((connection, info) =>
+        {
+            if (connection.Bot)
+                info.DontBroadcast = true;
+            return HookResult.Continue;
+        }, HookMode.Pre);
+        RegisterEventHandler<EventPlayerTeam>((change, _) =>
+        {
+            if (change.Userid is { IsValid: true, IsBot: true, IsHLTV: false })
+                change.SetBool("silent", true);
+            return HookResult.Continue;
+        }, HookMode.Pre);
+        RegisterEventHandler<EventPlayerDisconnect>((connection, info) =>
+        {
+            if (connection.Networkid == "BOT" ||
+                connection.Userid is { IsValid: true, IsBot: true, IsHLTV: false })
+                info.DontBroadcast = true;
+            return HookResult.Continue;
+        }, HookMode.Pre);
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
             if (readyPlayers.Count != 0)
@@ -309,7 +328,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         requestedBots.Clear();
         managedBotSlots.Clear();
         const string action = "bot_quota_mode normal; bot_quota 0; bot_kick";
-        AnnounceCommand(player, action, "Tar bort alla bottar.");
+        Console.WriteLine("[RepServer] Tar bort alla bottar.");
+        reply("[RepServer] Tar bort alla bottar.");
         Server.NextWorldUpdate(() =>
         {
             Server.ExecuteCommand(action);
@@ -331,7 +351,6 @@ public sealed partial class RepServerPlugin : BasePlugin
     {
         Console.Error.WriteLine($"[RepServer] CS2 skapade botten {bot.PlayerName} utan en begäran från RepServer. Botten tas bort.");
         bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
-        // Reconcile only when removing an extra bot. A named bot_add updates the quota itself.
         SyncBotQuota();
     }
 
@@ -498,7 +517,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private void StartBotFill(CCSPlayerController? player, CsTeam team, int target)
     {
         var teamLabel = BotTeamLabel(team);
-        AnnounceCommand(player, $"Botlista: {teamLabel}, mål {target}", $"Fyller {teamLabel} med upp till {target} bottar från namnlistan.");
+        Console.WriteLine($"[RepServer] Botlista: {teamLabel}, mål {target}.");
         botFillRequesterSlot = player?.Slot;
         // CS2 must finish the chat packet before it creates a bot.
         botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, null), TimerFlags.STOP_ON_MAPCHANGE);
@@ -516,6 +535,9 @@ public sealed partial class RepServerPlugin : BasePlugin
         var clients = Utilities.GetPlayers();
         var bots = clients.Where(client => client.IsBot && !client.IsHLTV).ToArray();
         var teamLabel = BotTeamLabel(team);
+        var isT = team == CsTeam.Terrorist;
+        var rules = Utilities.GetGameRules();
+        var teamHumans = clients.Count(client => !client.IsBot && client.TeamNum == (byte)team);
         foreach (var bot in bots.Where(bot => !requestedBots.Contains(bot.PlayerName)))
         {
             if (bot.IsValid)
@@ -532,6 +554,12 @@ public sealed partial class RepServerPlugin : BasePlugin
                 RejectUnrequestedBot(wrongTeam);
             else
                 SyncBotQuota();
+            if (rules is not null)
+            {
+                var teamLimit = isT ? rules.MaxNumTerrorists : rules.MaxNumCTs;
+                var spawnCount = isT ? rules.SpawnPointCount_Terrorist : rules.SpawnPointCount_CT;
+                Console.WriteLine($"[RepServer] {Server.MapName}: {teamLabel} {teamHumans + teamCount}/{teamLimit}, {spawnCount} spawnpunkter, server {clients.Count}/{PlayerLimit} platser.");
+            }
             ReportBotFill($"CS2 lade inte till {expected} på {teamLabel}. {teamCount} av {target} bottar.");
             return;
         }
@@ -562,12 +590,22 @@ public sealed partial class RepServerPlugin : BasePlugin
             return;
         }
 
-        var botCommand = team == CsTeam.Terrorist ? "bot_add_t" : "bot_add_ct";
+        if (rules is not null)
+        {
+            // Only raise the team cap to a count the map can spawn.
+            var spawnCount = isT ? rules.SpawnPointCount_Terrorist : rules.SpawnPointCount_CT;
+            var requiredTeamSlots = Math.Min(target + teamHumans, Math.Min(spawnCount, PlayerLimit));
+            ref var teamLimit = ref (isT ? ref rules.MaxNumTerrorists : ref rules.MaxNumCTs);
+            teamLimit = Math.Max(teamLimit, requiredTeamSlots);
+        }
+
+        var botCommand = isT ? "bot_add_t" : "bot_add_ct";
         requestedBots.Add(profile.Name);
         botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, profile.Name), TimerFlags.STOP_ON_MAPCHANGE);
         if (expected is null)
             Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_join_team {teamLabel.ToLowerInvariant()}");
-        Server.ExecuteCommand($"{botCommand} \"{profile.Name}\"");
+        // Pin the quota in the same command batch before the bot manager can auto-fill.
+        Server.ExecuteCommand($"{botCommand} \"{profile.Name}\"; bot_quota {requestedBots.Count.ToString(CultureInfo.InvariantCulture)}");
     }
 
     private void CancelBotFill()

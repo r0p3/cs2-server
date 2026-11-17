@@ -32,6 +32,9 @@ repserver_validate_env() {
 repserver_validate_env || exit 1
 unset -f repserver_validate_env
 
+# The base image passes -maxplayers. Also override the game mode's default.
+export CS2_ADDITIONAL_ARGS="${CS2_ADDITIONAL_ARGS:+$CS2_ADDITIONAL_ARGS }-maxplayers_override $CS2_MAXPLAYERS"
+
 repserver_install() {
     local game_dir="${STEAMAPPDIR}/game/csgo"
     local gameinfo="$game_dir/gameinfo.gi"
