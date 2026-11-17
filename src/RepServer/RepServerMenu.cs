@@ -36,7 +36,11 @@ public sealed partial class RepServerPlugin
         RegisterListener<Listeners.OnMapEnd>(CloseAllMenus);
     }
 
-    public override void Unload(bool hotReload) => CloseAllMenus();
+    public override void Unload(bool hotReload)
+    {
+        ResetReadyPlayers();
+        CloseAllMenus();
+    }
 
     private HookResult OnMenuChat(CCSPlayerController? player, CommandInfo command)
     {
@@ -69,6 +73,8 @@ public sealed partial class RepServerPlugin
             new("Serverstatus", client => CompleteMenuAction(client, () =>
                 client.PrintToChat($"[RepServer] {ModeLabel(activeMode)} | {Server.MapName} | v{ModuleVersion}")))
         };
+        if (IsReadinessWarmup())
+            options.Add(new("Redo för match", OpenReadyMenu));
         if (IsAdmin(player))
         {
             options.Add(new("Byt karta", OpenMapMenu));
@@ -78,6 +84,18 @@ public sealed partial class RepServerPlugin
         }
 
         OpenMenu(player, "RepServer", options);
+    }
+
+    private void OpenReadyMenu(CCSPlayerController player)
+    {
+        var humans = ConnectedHumans();
+        var ready = humans.Count(IsReady);
+        OpenMenu(player, $"Redo för match ({ready}/{humans.Length})",
+        [
+            new("Jag är redo", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, true))),
+            new("Ta tillbaka redo", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, false))),
+            new("Visa vilka som är redo", client => CompleteMenuAction(client, () => ShowReadyStatus(client.PrintToChat)))
+        ], OpenMainMenu);
     }
 
     private void OpenMapMenu(CCSPlayerController player) =>

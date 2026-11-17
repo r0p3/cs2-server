@@ -54,6 +54,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 | `!change-mode bot-dm` eller `!mode bot-dm` | Admin | Spara läget och starta om servern |
 | `!mode bot-game t` | Admin | Spela som T mot CT-bots |
 | `!live` | Admin | Avsluta uppvärmningen i bot-game |
+| `!ready`, `!unready`, `!readystatus` | Alla | Markera dig som redo på resultattavlan, ta bort markeringen eller visa status i chatten |
 | `!restart` eller `!omstart` | Admin | Starta om matchen |
 | `!pause`, `!unpause` | Admin | Begär matchpaus eller återuppta matchen |
 | `!kick_bot` | Admin | Ta bort alla bots och stäng av automatisk botpåfyllning på aktuell karta |
@@ -63,13 +64,15 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 
-När första spelaren har anslutit helt väntar RepServer minst fem sekunder innan den fyller från listan till 10 deltagare. Alla botkommandon som lägger till bottar väntar medan en spelare ansluter. Kör `!kick_bot` för att avbryta och tömma bottarna på den aktuella kartan. Kör sedan exempelvis `!set_bot_t 20` för att fylla på T. Standard är 25 platser totalt, med plats för fyra spelare, 20 bottar och en reservplats så långt kartan och spelmotorn tillåter.
+När första spelaren har anslutit helt väntar RepServer minst fem sekunder innan den lägger till 10 bottar från listan. I vanliga `bot-game` går de till T. Botkommandona väntar medan en spelare ansluter. Kör `!kick_bot` för att avbryta och tömma bottarna på kartan eller `!set_bot_t 20` för att höja målet på T. Standard är 25 platser totalt, med plats för fyra spelare, 20 bottar och en reservplats så långt kartan och spelmotorn tillåter.
 
 `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
 
 ## Spellägen
 
-`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots. Matchen börjar med er långa uppvärmning. Kör `!live` när det är dags att spela match.
+`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots.
+
+Under uppvärmningen skriver spelarna `!ready` eller väljer **Redo för match** i menyn. Håll **Tab** för att se `[REDO]` framför namnen på de spelare som är redo. `!unready` tar bort din markering. När alla anslutna människor, inklusive åskådare, är redo avslutas uppvärmningen och markeringarna försvinner. `!readystatus` visar samma status i chatten vid behov. Admin kan starta matchen manuellt med `!live`.
 
 `bot-dm` kör FFA Deathmatch med snabb respawn. `bot-dm-pistol` använder samma grund med pistol och kniv. Profilerna ligger i [config/modes/](config/modes/README.md).
 

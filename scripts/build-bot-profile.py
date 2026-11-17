@@ -28,9 +28,32 @@ def read_profiles(path):
 
 def build_database(profiles):
     blocks = [
-        "Default\nSkill = 85\nAggression = 65\nTeamwork = 90\nReactionTime = 0.25\nDifficulty = EXPERT\nEnd",
-        "Template RepRifle\nWeaponPreference = ak47\nWeaponPreference = m4a1\nWeaponPreference = famas\nEnd",
-        "Template RepSniper\nWeaponPreference = awp\nWeaponPreference = ssg08\nEnd",
+        """Default
+Skill = 100
+Aggression = 70
+Teamwork = 100
+ReactionTime = 0.14
+AimFocusInitial = 4
+LookAngleMaxAccelNormal = 6000.0
+LookAngleStiffnessNormal = 1100.0
+LookAngleDampingNormal = 100.0
+LookAngleMaxAccelAttacking = 20000.0
+LookAngleStiffnessAttacking = 1000.0
+LookAngleDampingAttacking = 65.0
+Difficulty = EXPERT
+End""",
+        """Template RepRifle
+Aggression = 80
+WeaponPreference = ak47
+WeaponPreference = m4a1
+WeaponPreference = famas
+WeaponPreference = galilar
+End""",
+        """Template RepSniper
+Aggression = 55
+WeaponPreference = awp
+WeaponPreference = ssg08
+End""",
     ]
     for name, role in profiles:
         template = "RepSniper" if role == "sniper" else "RepRifle"
