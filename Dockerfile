@@ -19,3 +19,4 @@ RUN dotnet build -c Release -o /out -p:CounterStrikeSharpApi=/bundle/addons/coun
 FROM upstream
 COPY --from=build /bundle/ /opt/repserver/
 COPY config/maps.txt /opt/repserver/maps.txt
+COPY config/modes/*.cfg /opt/repserver/modes/

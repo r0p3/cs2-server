@@ -1,15 +1,12 @@
-# Befintliga lägeskonfigurationer
+# Lägesprofiler
 
-Lägg de `.cfg`-filer ni redan kör här. Behåll filnamnen och ta med eventuella andra cfg-filer som de laddar med `exec`. Om en fil innehåller lösenord eller Steam-token, ta bort de raderna innan du lägger filen här.
+| Val i chatten | Konfiguration | Regler |
+| --- | --- | --- |
+| `!mode bot-game` eller `!mode bot-game ct` | `bot_game.cfg` | Competitive med bots på T |
+| `!mode bot-game t` | `bot_game_t.cfg` | Competitive med bots på CT |
+| `!mode bot-dm` | `bot_dm.cfg` | FFA Deathmatch |
+| `!mode bot-dm-pistol` | `bot_dm_pistol.cfg` | FFA Deathmatch med pistoler och kniv |
 
-Skriv gärna i samma mapp eller i chatten vilken fil ni kör för varje läge:
+De två befintliga matchfilerna behåller sina matchregler. Botkvoten är anpassad till serverns 10 platser. `bot_quota_mode fill` sköter tillägget av bots.
 
-| Läge | Vad vi letar efter |
-| --- | --- |
-| `bot-dm-pistol` | Er nuvarande pistol-DM-konfiguration |
-| `bot-dm` | Er vanliga DM-konfiguration |
-| `bot-game` | Er rundbaserade matchkonfiguration mot bots |
-
-Ta även med hur ni startar varje läge om det kräver ett separat serverkommando, särskilda startflaggor eller en Workshop-karta. Det hjälper oss att bevara både reglerna och laddningsordningen när spellägesbytet byggs.
-
-Filerna i den här mappen är underlag för implementationen. De aktiveras när vi kopplar varje profil till spellägesbytet.
+Docker bygger in filerna i imagen. Uppstartsskriptet kopierar dem till spelets `cfg/repserver/` och lägger till en `exec` i respektive spelläges serverkonfiguration. Lägg egna ändringar i dessa profiler och kör `./scripts/update.sh` efter uppdatering.

@@ -3,6 +3,9 @@
 !config/
 config/**
 !config/maps.txt
+!config/modes/
+config/modes/**
+!config/modes/*.cfg
 !src/
 src/**
 !src/RepServer/

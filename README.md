@@ -22,7 +22,7 @@ Har du en befintlig installation, följ migreringen nedan innan du startar den n
 docker compose logs -f cs2
 ```
 
-Verifiera `[RepServer] v0.1.0 laddad` i loggen och `meta list` i serverkonsolen. Anslut som spelare och kör `!status`. Första SteamCMD-hämtningen kan ta en stund. UDP exponeras för spelarna, medan TCP för RCON är bunden till localhost.
+Verifiera att RepServer är laddad i loggen och kör `meta list` i serverkonsolen. Anslut som spelare, kontrollera att kommandolistan visas i chatten och kör `!status`. Första SteamCMD-hämtningen kan ta en stund. UDP exponeras för spelarna, medan TCP för RCON är bunden till localhost.
 
 Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinstallationens `.env` och anslut på port 27016. Använd olika Compose-projektnamn om båda mapparna heter `cs2-server`. Sätt då till exempel `COMPOSE_PROJECT_NAME=cs2-server-test` i testinstallationens `.env` så att vanliga Compose-kommandon i den mappen riktas till testprojektet.
 
@@ -36,18 +36,29 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 ## Kommandon
 
+Kommandolistan visas i spelarens chatt vid anslutning. `!help` visar samma lista igen.
+
 | Kommando | Vem | Beteende |
 | --- | --- | --- |
-| `!help`, `!maps`, `!status` | Alla | Visa kommandon, tillåtna kartor eller aktuell karta och pluginversion |
+| `!help`, `!maps`, `!modes`, `!status` | Alla | Visa kommandon, tillåtna kartor, spellägen eller serverstatus |
 | `!map de_mirage` | Admin | Byt till en karta i `config/maps.txt` |
+| `!change-mode bot-dm` eller `!mode bot-dm` | Admin | Spara läget och starta om servern |
+| `!mode bot-game t` | Admin | Spela som T mot CT-bots |
+| `!live` | Admin | Avsluta uppvärmningen i bot-game |
 | `!restart` eller `!omstart` | Admin | Starta om matchen |
 | `!pause`, `!unpause` | Admin | Begär matchpaus eller återuppta matchen |
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 
-## Befintliga lägeskonfigurationer
+## Spellägen
 
-Lägg era nuvarande `.cfg`-filer i [config/modes/](config/modes/README.md) så att vi kan återanvända dem för botlägena.
+`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots. Matchen börjar med er långa uppvärmning. Kör `!live` när det är dags att spela match.
+
+`bot-dm` kör FFA Deathmatch med snabb respawn. `bot-dm-pistol` använder samma grund med pistol och kniv. Profilerna ligger i [config/modes/](config/modes/README.md).
+
+Vid första start används `bot-game`. Ett aktivt lägesval sparas i `data/state/mode`, så att en serveromstart fortsätter i det valda läget. Vid lägesbyte startar Docker om servern och spelarna ansluter igen. Spelarna ser aktuellt spelläge och karta i chatten vid anslutning. För att återställa grundläget manuellt, skriv `bot-game` i `data/state/mode` och kör `docker compose restart cs2`.
+
+När en vanlig karta laddas sparas den i `data/state/last-map`. Den laddas igen efter omstart, även vid lägesbyte. `CS2_STARTMAP` används när kartfilen saknas eller innehåller ett ogiltigt kartnamn. Ta bort `data/state/last-map` medan servern är stoppad om du vill använda startkartan från `.env` igen.
 
 ## Uppdatera
 
@@ -60,4 +71,4 @@ Skriptet validerar Compose, bygger imagen före omstarten och återskapar contai
 
 CounterStrikeSharp och Metamod har fasta releaseversioner i Dockerfile. Basimagen använder en flytande tagg tills en image har provkörts. Sätt `CS2_BASE_IMAGE` till den verifierade digesten i `.env` när du har den. SteamCMD hanterar spelbuilden separat.
 
-Spellägesbyte, pistolregler, röstning, Workshop och automatiserad backup återstår enligt [planen](PLAN.md).
+Röstning, Workshop och automatiserad backup återstår enligt [planen](PLAN.md).
