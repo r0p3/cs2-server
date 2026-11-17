@@ -24,12 +24,14 @@ docker compose logs -f cs2
 
 Verifiera `[RepServer] v0.1.0 laddad` i loggen och `meta list` i serverkonsolen. Anslut som spelare och kör `!status`. Första SteamCMD-hämtningen kan ta en stund. UDP exponeras för spelarna, medan TCP för RCON är bunden till localhost.
 
+Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinstallationens `.env` och anslut på port 27016. Använd olika Compose-projektnamn om båda mapparna heter `cs2-server`. Sätt då till exempel `COMPOSE_PROJECT_NAME=cs2-server-test` i testinstallationens `.env` så att vanliga Compose-kommandon i den mappen riktas till testprojektet.
+
 ## Flytta befintlig serverdata
 
 1. Ta en kopia av gamla Compose-inställningar och katalogen `/home/r0p3/data/gameservers/cs2-data`. Inventera egna cfg-filer, plugins och eventuella gamla startskript.
 2. Stoppa den befintliga servern på värden. Kontrollera att `data/server` är tom och kör `rsync -a /home/r0p3/data/gameservers/cs2-data/ data/server/` som en användare med rätt att läsa källan och bevara ägarskapet.
 3. Kontrollera kopian och skrivbehörigheten för uid 1000. Den nya Compose-konfigurationen monterar sitt eget `pre.sh`. Flytta över eventuella anpassningar från det gamla skriptet som du behöver behålla. Upstream skapar om `server.cfg` vid uppstart.
-4. Kör `./scripts/update.sh`. Om Docker rapporterar att namnet `cs2-dedicated` är upptaget av en container från ett annat Compose-projekt, kontrollera projektet och ta bort den gamla stoppade containern först när kopian har verifierats.
+4. Kör `./scripts/update.sh`. Compose väljer containernamn utifrån projektnamnet. Om båda installationerna ska köras samtidigt måste de också använda olika värdportar.
 5. Kontrollera anslutning, kartor och plugin. Behåll källkatalogen och backupen tills servern har provkörts.
 
 ## Kommandon
