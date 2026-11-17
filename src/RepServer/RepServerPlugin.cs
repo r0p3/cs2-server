@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
@@ -11,7 +12,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.3.1";
+    public override string ModuleVersion => "0.3.6";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -22,6 +23,9 @@ public sealed partial class RepServerPlugin : BasePlugin
     private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
     private string[] maps = [];
+    private sealed record BotProfile(string Name, string Role);
+    private readonly List<BotProfile> botProfiles = new();
+    private readonly HashSet<string> priorityBotNames = new(StringComparer.OrdinalIgnoreCase);
     private string activeMode = "bot-game";
     private string? pendingMode;
     private CounterStrikeSharp.API.Modules.Timers.Timer? botFillTimer;
@@ -46,6 +50,9 @@ public sealed partial class RepServerPlugin : BasePlugin
             .Where(line => MapName.IsMatch(line))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+
+        LoadBotProfiles();
+        LoadBotPriorities();
 
         RegisterListener<Listeners.OnMapStart>(map =>
         {
@@ -118,7 +125,19 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterChatCommand("set_bot_ct", "Fyll på CT upp till valt antal bots", (player, command) =>
             SetBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "<antal>");
         RegisterChatCommand("petter", "Testa namnet Petter Toivonen på en bot", (player, command) =>
-            RenameTestBot(player, command.ReplyToCommand), admin: true);
+            RenameTestBot(player, command.ReplyToCommand, "Petter Toivonen"), admin: true);
+        RegisterChatCommand("bot_roster", "Förhandsvisa botlistan med en sniper per fem", (_, command) =>
+        {
+            if (command.ArgCount != 2 ||
+                !int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out var target) ||
+                target < 1 || target > PlayerLimit)
+            {
+                command.ReplyToCommand($"[RepServer] Använd !bot_roster <antal> (1–{PlayerLimit}).");
+                return;
+            }
+
+            PreviewBotRoster(target, command.ReplyToCommand);
+        }, arguments: "<antal>");
         RegisterChatCommand("live", "Avsluta uppvärmningen i bot-game", (player, command) => StartMatch(player, command.ReplyToCommand), admin: true);
 
         var joinLines = commands.GroupBy(entry => entry.Admin)
@@ -231,32 +250,115 @@ public sealed partial class RepServerPlugin : BasePlugin
         Server.NextWorldUpdate(() => Server.ExecuteCommand(action));
     }
 
-    private static void RenameTestBot(CCSPlayerController? player, Action<string> reply)
+    private void RenameTestBot(CCSPlayerController? player, Action<string> reply, string testName)
     {
         if (!CheckAdmin(player, reply))
             return;
 
-        const string testName = "Petter Toivonen";
-        var bots = Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
-        if (bots.Any(bot => bot.PlayerName == testName))
+        var profile = botProfiles.FirstOrDefault(entry => string.Equals(entry.Name, testName, StringComparison.OrdinalIgnoreCase));
+        if (profile is null)
         {
-            reply($"[RepServer] {testName} finns redan på servern.");
+            reply("[RepServer] Namnet finns inte i botlistan.");
             return;
         }
 
-        var bot = bots.FirstOrDefault();
+        var bots = Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
+        if (bots.Any(bot => string.Equals(bot.PlayerName, profile.Name, StringComparison.OrdinalIgnoreCase)))
+        {
+            reply($"[RepServer] {profile.Name} finns redan på servern.");
+            return;
+        }
+
+        var bot = bots.FirstOrDefault(candidate => !botProfiles.Any(entry =>
+            string.Equals(entry.Name, candidate.PlayerName, StringComparison.OrdinalIgnoreCase)));
         if (bot is null)
         {
-            reply("[RepServer] Lägg först till en bot med !add_bot_t eller !add_bot_ct.");
+            reply("[RepServer] Ingen ledig bot för namnbyte. Lägg först till en ny bot.");
             return;
         }
 
         var previousName = bot.PlayerName;
-        bot.PlayerName = testName;
+        bot.PlayerName = profile.Name;
         Utilities.SetStateChanged(bot, "CBasePlayerController", "m_iszPlayerName");
         var appliedName = bot.PlayerName;
         Console.WriteLine($"[RepServer] Botnamnstest, plats {bot.Slot}: {previousName} -> {appliedName}");
         reply($"[RepServer] Servern rapporterar namnet {appliedName}. Kontrollera resultattavlan med Tab.");
+    }
+
+    private void LoadBotProfiles()
+    {
+        botProfiles.Clear();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var lineNumber = 0;
+        foreach (var line in File.ReadLines("/opt/repserver/bot-names.txt"))
+        {
+            lineNumber++;
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+                continue;
+
+            var fields = trimmed.Split('|', 2, StringSplitOptions.TrimEntries);
+            var name = fields[0];
+            var role = fields.Length == 2 ? fields[1].ToLowerInvariant() : "rifle";
+            if (name.Length == 0 || name.Any(char.IsControl) || Encoding.UTF8.GetByteCount(name) > 31 ||
+                role is not ("rifle" or "sniper") || !seen.Add(name))
+            {
+                Console.Error.WriteLine($"[RepServer] Ogiltigt eller upprepat botnamn i bot-names.txt på rad {lineNumber}.");
+                continue;
+            }
+
+            botProfiles.Add(new BotProfile(name, role));
+        }
+    }
+
+    private void PreviewBotRoster(int target, Action<string> reply)
+    {
+        var rifle = RandomizedBots("rifle");
+        var sniper = RandomizedBots("sniper");
+        var roster = new List<BotProfile>();
+
+        for (var position = 1; position <= target; position++)
+        {
+            var available = position % 5 == 0 ? sniper : rifle;
+            if (!available.TryDequeue(out var profile))
+                break;
+
+            roster.Add(profile);
+        }
+
+        var sniperCount = roster.Count(profile => profile.Role == "sniper");
+        reply($"[RepServer] Förhandsvisning: {roster.Count} av {target} bottar, varav {sniperCount} snipers.");
+        if (roster.Count < target)
+        {
+            var missingRole = (roster.Count + 1) % 5 == 0 ? "sniper" : "rifle";
+            reply($"[RepServer] Nästa plats kräver ett ledigt namn med rollen {missingRole}.");
+        }
+
+        foreach (var group in roster.Chunk(2))
+            reply("[RepServer] " + string.Join(", ", group.Select(profile => $"{profile.Name} ({profile.Role})")));
+    }
+
+    private void LoadBotPriorities()
+    {
+        priorityBotNames.Clear();
+        foreach (var line in File.ReadLines("/opt/repserver/bot-priority.txt"))
+        {
+            var name = line.Trim();
+            if (name.Length == 0 || name.StartsWith('#'))
+                continue;
+
+            if (botProfiles.Any(profile => string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase)))
+                priorityBotNames.Add(name);
+            else
+                Console.Error.WriteLine($"[RepServer] Prioriterat namn saknas i bot-names.txt: {name}");
+        }
+    }
+
+    private Queue<BotProfile> RandomizedBots(string role)
+    {
+        var candidates = botProfiles.Where(profile => profile.Role == role).ToArray();
+        Random.Shared.Shuffle(candidates.AsSpan());
+        return new Queue<BotProfile>(candidates.OrderByDescending(profile => priorityBotNames.Contains(profile.Name)));
     }
 
     private void AddBot(CCSPlayerController? player, Action<string> reply, string botCommand, string team)

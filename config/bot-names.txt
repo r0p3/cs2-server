@@ -1,0 +1,23 @@
+# Ett namn per rad i formatet Namn | rifle eller Namn | sniper.
+# Byt rifle till sniper på de rader du vill ge sniperrollen.
+# Förhandsvisningen använder en sniper på var femte plats. För 20 behövs 16 rifle och 4 sniper.
+Petter Toivonen | sniper
+Louis Litt | rifle
+Morgan Karlsson | rifle
+Ola-Conny | rifle
+Rövfett Arselberg | rifle
+Greta Sugberg | rifle
+Le Fet | rifle
+Heckliga Hecklish | rifle
+Rolf Mjunstedt | sniper
+Nisse Lind | rifle
+Sharre | rifle
+Prison Mike | rifle
+Pliip | rifle
+Vexdog | sniper
+rep | rifle
+erk | rifle
+mark | rifle
+Tjocka Bävlingen | rifle
+Christian Green | rifle
+Diskvatten | sniper

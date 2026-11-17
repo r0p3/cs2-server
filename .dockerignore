@@ -3,6 +3,8 @@
 !config/
 config/**
 !config/maps.txt
+!config/bot-names.txt
+!config/bot-priority.txt
 !config/modes/
 config/modes/**
 !config/modes/*.cfg

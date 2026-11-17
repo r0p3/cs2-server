@@ -1,5 +1,3 @@
-using System.Net;
-using System.Text;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
@@ -9,45 +7,101 @@ namespace RepServer;
 
 public sealed partial class RepServerPlugin
 {
-    private const PlayerButtons MenuButtons =
-        PlayerButtons.Forward | PlayerButtons.Back | PlayerButtons.Use | PlayerButtons.Reload;
-    private const int VisibleOptions = 4;
+    private const int MenuPageSize = 7;
+    private const double MenuTimeout = 30;
     private readonly Dictionary<int, MenuSession> menus = new();
 
     private sealed record MenuOption(string Label, Action<CCSPlayerController> Select);
 
     private sealed class MenuSession(string title, IReadOnlyList<MenuOption> options,
-        Action<CCSPlayerController>? back, PlayerButtons buttons, double expiresAt)
+        Action<CCSPlayerController>? back)
     {
         public string Title { get; } = title;
         public IReadOnlyList<MenuOption> Options { get; } = options;
         public Action<CCSPlayerController>? Back { get; } = back;
-        public PlayerButtons PreviousButtons { get; set; } = buttons;
-        public double ExpiresAt { get; set; } = expiresAt;
-        public double RefreshAt { get; set; }
-        public int Selected { get; set; }
+        public double ExpiresAt { get; set; }
+        public int Page { get; set; }
+        public bool SelectionPending { get; set; }
     }
 
     private void RegisterMenuListeners()
     {
         AddCommandListener("say", (player, command) => OnMenuChat(player, command), HookMode.Pre);
         AddCommandListener("say_team", (player, command) => OnMenuChat(player, command), HookMode.Pre);
-        RegisterListener<Listeners.OnTick>(UpdateMenus);
         RegisterListener<Listeners.OnClientDisconnect>(slot => menus.Remove(slot));
         RegisterListener<Listeners.OnMapStart>(_ => menus.Clear());
     }
 
     private HookResult OnMenuChat(CCSPlayerController? player, CommandInfo command)
     {
-        if (player is not { IsValid: true, IsBot: false, IsHLTV: false } ||
-            command.ArgCount != 2 || command.ArgByIndex(1).Trim() != "!")
+        if (player is not { IsValid: true, IsBot: false, IsHLTV: false } || command.ArgCount != 2)
             return HookResult.Continue;
 
-        if (menus.ContainsKey(player.Slot))
-            CloseMenu(player);
-        else
-            OpenMainMenu(player);
+        var input = command.ArgByIndex(1).Trim();
+        var slot = player.Slot;
+        var session = menus.GetValueOrDefault(slot);
+        if (session is not null && session.ExpiresAt <= Server.EngineTime)
+        {
+            menus.Remove(slot);
+            session = null;
+        }
+
+        if (input == "!")
+        {
+            if (session is null)
+                OpenMainMenu(player);
+            else
+                CloseMenu(player);
+            return HookResult.Handled;
+        }
+
+        if (session is null || input.Length != 1 || input[0] is < '0' or > '9')
+            return HookResult.Continue;
+
+        if (session.SelectionPending)
+            return HookResult.Handled;
+
+        var key = input[0] - '0';
+        var offset = session.Page * MenuPageSize;
+        switch (key)
+        {
+            case 0:
+                if (session.Back is null)
+                    CloseMenu(player);
+                else
+                    session.Back(player);
+                break;
+            case 8 when session.Page > 0:
+                session.Page--;
+                RenderMenu(player, session);
+                break;
+            case 9 when offset + MenuPageSize < session.Options.Count:
+                session.Page++;
+                RenderMenu(player, session);
+                break;
+            case >= 1 and <= MenuPageSize when offset + key <= session.Options.Count:
+                QueueMenuSelection(slot, session, session.Options[offset + key - 1]);
+                break;
+            default:
+                player.PrintToChat("[RepServer] Välj en siffra som visas i menyn.");
+                break;
+        }
         return HookResult.Handled;
+    }
+
+    private void QueueMenuSelection(int slot, MenuSession session, MenuOption option)
+    {
+        session.SelectionPending = true;
+        // Map changes and bot actions must not run while CS2 processes the chat packet.
+        Server.NextWorldUpdate(() =>
+        {
+            if (!ReferenceEquals(menus.GetValueOrDefault(slot), session))
+                return;
+
+            session.SelectionPending = false;
+            if (Utilities.GetPlayerFromSlot(slot) is { IsValid: true } player)
+                option.Select(player);
+        });
     }
 
     private void OpenMainMenu(CCSPlayerController player)
@@ -99,107 +153,63 @@ public sealed partial class RepServerPlugin
         [
             new("Välj antal på T", client => OpenBotCountMenu(client, CsTeam.Terrorist, 5)),
             new("Välj antal på CT", client => OpenBotCountMenu(client, CsTeam.CounterTerrorist, 5)),
+            new("Botnamn", OpenBotNameMenu),
             new("Lägg till en på T", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, "bot_add_t", "T"))),
             new("Lägg till en på CT", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, "bot_add_ct", "CT"))),
             new("Ta bort alla bottar", client => CompleteMenuAction(client, () => KickBots(client, client.PrintToChat)))
         ], OpenMainMenu);
 
-    private void OpenBotCountMenu(CCSPlayerController player, CsTeam team, int requested, int selected = 0)
+    private void OpenBotNameMenu(CCSPlayerController player)
+    {
+        if (botProfiles.Count == 0)
+        {
+            player.PrintToChat("[RepServer] Namnlistan är tom. Lägg till namn i config/bot-names.txt.");
+            return;
+        }
+
+        var options = botProfiles.Select(profile => new MenuOption($"{profile.Name} · {profile.Role}", client => CompleteMenuAction(client,
+            () => RenameTestBot(client, client.PrintToChat, profile.Name)))).ToArray();
+        OpenMenu(player, "Välj botnamn", options, OpenBotMenu);
+    }
+
+    private void OpenBotCountMenu(CCSPlayerController player, CsTeam team, int requested)
     {
         var target = Math.Clamp(requested, 1, Math.Max(1, PlayerLimit));
         var teamName = team == CsTeam.Terrorist ? "T" : "CT";
         OpenMenu(player, $"{teamName} · {target} bottar",
         [
             new($"Fyll på till {target}", client => CompleteMenuAction(client, () => SetBots(client, client.PrintToChat, team, target))),
-            new("Öka med 1", client => OpenBotCountMenu(client, team, target + 1, 1)),
-            new("Öka med 5", client => OpenBotCountMenu(client, team, target + 5, 2)),
-            new("Minska med 1", client => OpenBotCountMenu(client, team, target - 1, 3)),
-            new("Minska med 5", client => OpenBotCountMenu(client, team, target - 5, 4))
-        ], OpenBotMenu, selected);
+            new("Öka med 1", client => OpenBotCountMenu(client, team, target + 1)),
+            new("Öka med 5", client => OpenBotCountMenu(client, team, target + 5)),
+            new("Minska med 1", client => OpenBotCountMenu(client, team, target - 1)),
+            new("Minska med 5", client => OpenBotCountMenu(client, team, target - 5))
+        ], OpenBotMenu);
     }
 
     private void OpenMenu(CCSPlayerController player, string title, IReadOnlyList<MenuOption> options,
-        Action<CCSPlayerController>? back = null, int selected = 0)
+        Action<CCSPlayerController>? back = null)
     {
-        var session = new MenuSession(title, options, back, ReadMenuButtons(player), Server.EngineTime + 30) { Selected = selected };
+        var session = new MenuSession(title, options, back);
         menus[player.Slot] = session;
         RenderMenu(player, session);
     }
 
-    private void UpdateMenus()
-    {
-        if (menus.Count == 0)
-            return;
-
-        foreach (var (slot, session) in menus.ToArray())
-        {
-            if (Utilities.GetPlayerFromSlot(slot) is not { IsValid: true } player)
-            {
-                menus.Remove(slot);
-                continue;
-            }
-            var now = Server.EngineTime;
-            if (now >= session.ExpiresAt)
-            {
-                CloseMenu(player);
-                continue;
-            }
-
-            var buttons = ReadMenuButtons(player);
-            var pressed = buttons & ~session.PreviousButtons;
-            session.PreviousButtons = buttons;
-            if (pressed != 0)
-                session.ExpiresAt = now + 30;
-
-            if ((pressed & PlayerButtons.Reload) != 0)
-            {
-                if (session.Back is null)
-                    CloseMenu(player);
-                else
-                    session.Back(player);
-                continue;
-            }
-            if ((pressed & PlayerButtons.Use) != 0 && session.Options.Count > 0)
-            {
-                session.Options[session.Selected].Select(player);
-                continue;
-            }
-            if ((pressed & (PlayerButtons.Forward | PlayerButtons.Back)) != 0 && session.Options.Count > 0)
-            {
-                var direction = (pressed & PlayerButtons.Forward) != 0 ? -1 : 1;
-                session.Selected = (session.Selected + direction + session.Options.Count) % session.Options.Count;
-                RenderMenu(player, session);
-            }
-            else if (now >= session.RefreshAt)
-            {
-                RenderMenu(player, session);
-            }
-        }
-    }
-
-    private static PlayerButtons ReadMenuButtons(CCSPlayerController player) =>
-        player.Pawn.Value is { IsValid: true, MovementServices: { } movement }
-            ? (PlayerButtons)movement.Buttons.ButtonStates[0] & MenuButtons
-            : 0;
-
     private static void RenderMenu(CCSPlayerController player, MenuSession session)
     {
-        var html = new StringBuilder("<font color='#ffcc66'><b>")
-            .Append(WebUtility.HtmlEncode(session.Title))
-            .Append("</b></font><br>");
-        var start = Math.Clamp(session.Selected - VisibleOptions + 1, 0, Math.Max(0, session.Options.Count - VisibleOptions));
-        for (var index = start; index < Math.Min(start + VisibleOptions, session.Options.Count); index++)
-        {
-            if (index == session.Selected)
-                html.Append("<font color='#aaddff'>&gt; ");
-            html.Append(WebUtility.HtmlEncode(session.Options[index].Label));
-            if (index == session.Selected)
-                html.Append("</font>");
-            html.Append("<br>");
-        }
-        html.Append("W/S Flytta · E Välj · R ").Append(session.Back is null ? "Stäng" : "Tillbaka");
-        player.PrintToCenterHtml(html.ToString(), 2);
-        session.RefreshAt = Server.EngineTime + 1;
+        var offset = session.Page * MenuPageSize;
+        var end = Math.Min(offset + MenuPageSize, session.Options.Count);
+        player.PrintToChat($"[RepServer] {session.Title} · skriv siffran i chatten");
+        for (var index = offset; index < end; index++)
+            player.PrintToChat($"  {index - offset + 1}. {session.Options[index].Label}");
+
+        var navigation = new List<string>();
+        if (session.Page > 0)
+            navigation.Add("8 Föregående sida");
+        if (end < session.Options.Count)
+            navigation.Add("9 Nästa sida");
+        navigation.Add(session.Back is null ? "0 Stäng" : "0 Tillbaka");
+        player.PrintToChat("[RepServer] " + string.Join(" · ", navigation));
+        session.ExpiresAt = Server.EngineTime + MenuTimeout;
     }
 
     private void CompleteMenuAction(CCSPlayerController player, Action action)
@@ -211,6 +221,5 @@ public sealed partial class RepServerPlugin
     private void CloseMenu(CCSPlayerController player)
     {
         menus.Remove(player.Slot);
-        player.PrintToCenterHtml(" ", 1);
     }
 }

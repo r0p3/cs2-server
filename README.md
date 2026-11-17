@@ -36,9 +36,13 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 ## Kommandon
 
-Skriv `!` ensamt i spelchatten eller använd `!menu` för att öppna RepServer-menyn mitt på skärmen. Med standardbindningar flyttar du markeringen med **W/S**, väljer med **E** och går tillbaka med **R**. Tryck **R** på huvudmenyn eller skriv `!` igen för att stänga den.
+Skriv `!` ensamt i spelchatten eller använd `!menu` för att öppna RepServer-menyn i din egen chatt. Skriv siffran som står vid alternativet och tryck Enter. `8` och `9` bläddrar när fler sidor visas. `0` går tillbaka eller stänger huvudmenyn. Du kan också stänga med `!`. Menyn väntar i 30 sekunder på nästa val och kan användas under uppvärmning.
 
 Alla spelare kan se serverstatus. Admin får också menyer för kartor, spellägen, matchkontroller och bottar. Under **Bottar** kan du välja lag och justera målantalet innan du startar påfyllningen.
+
+Redigera [config/bot-names.txt](config/bot-names.txt) för att lägga till eller byta namn. Skriv `Namn | rifle` eller `Namn | sniper`, ett namn per rad (högst 31 byte i UTF-8), och bygg om med `./scripts/update.sh`. Som admin kan du se listan och prova ett namn på en befintlig bot via **Bottar → Botnamn**. Kontrollera med **Tab** att namnbytet syns på resultattavlan. Tabellen styr än så länge namnbytestestet och rollvisningen. Spelmotorns automatiska botnamn och vapenval använder fortfarande spelprofilerna.
+
+`!bot_roster 20` lottar en uppställning för matchläget. På var femte plats tas en sniper, övriga platser fylls med rifle och varje namn kan bara användas en gång. Skriv ett befintligt namn per rad i [config/bot-priority.txt](config/bot-priority.txt) för att prioritera det inom sin roll. Det lottas även mellan prioriterade namn. Förhandsvisningen stannar om ett namn med rätt roll saknas. Den faktiska påfyllningen i spelet använder ännu inte den planen.
 
 Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga listan med syntax, beskrivning och adminmarkering.
 
@@ -56,6 +60,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 | `!add_bot_t`, `!add_bot_ct` | Admin | Lägg till en bot på T respektive CT om det finns plats |
 | `!set_bot_t <antal>`, `!set_bot_ct <antal>` | Admin | Fyll på valt lag med bots upp till antalet du anger, så långt platserna räcker |
 | `!petter` | Admin | Prova namnet Petter Toivonen på en befintlig bot och kontrollera med Tab |
+| `!bot_roster <antal>` | Alla | Förhandsvisa namn och roller för valt antal bottar |
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 

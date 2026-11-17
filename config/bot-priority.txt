@@ -1,0 +1,5 @@
+# Ett prioriterat namn per rad. Använd namn som redan finns i bot-names.txt.
+# Prioriterade namn lottas före övriga inom samma roll.
+Petter Toivonen
+Rolf Mjunstedt
+Diskvatten
