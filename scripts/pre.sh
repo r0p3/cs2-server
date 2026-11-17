@@ -21,6 +21,10 @@ repserver_validate_env() {
         echo "RepServer: CS2_STARTMAP får endast innehålla a-z, 0-9 och understreck." >&2
         invalid=1
     fi
+    if [[ ! ${CS2_MAXPLAYERS:-} =~ ^[1-9][0-9]?$ ]] || (( CS2_MAXPLAYERS < 2 || CS2_MAXPLAYERS > 64 )); then
+        echo "RepServer: CS2_MAXPLAYERS måste vara ett heltal mellan 2 och 64." >&2
+        invalid=1
+    fi
 
     return "$invalid"
 }

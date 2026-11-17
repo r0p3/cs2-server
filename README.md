@@ -36,10 +36,15 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 ## Kommandon
 
+Skriv `!` ensamt i spelchatten eller använd `!menu` för att öppna RepServer-menyn mitt på skärmen. Med standardbindningar flyttar du markeringen med **W/S**, väljer med **E** och går tillbaka med **R**. Tryck **R** på huvudmenyn eller skriv `!` igen för att stänga den.
+
+Alla spelare kan se serverstatus. Admin får också menyer för kartor, spellägen, matchkontroller och bottar. Under **Bottar** kan du välja lag och justera målantalet innan du startar påfyllningen.
+
 Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga listan med syntax, beskrivning och adminmarkering.
 
 | Kommando | Vem | Beteende |
 | --- | --- | --- |
+| `!` eller `!menu` | Alla | Öppna menyn i spelet |
 | `!help`, `!maps`, `!modes`, `!status` | Alla | Visa kommandon, tillåtna kartor, spellägen eller serverstatus |
 | `!map de_mirage` | Admin | Byt till en karta i `config/maps.txt` |
 | `!change-mode bot-dm` eller `!mode bot-dm` | Admin | Spara läget och starta om servern |
@@ -53,7 +58,9 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 
-Om automatisk botpåfyllning redan har fyllt servern, börja med `!kick_bot`. Kör sedan exempelvis `!set_bot_t 8` för att fylla på T, eller lägg till en bot i taget med `!add_bot_t`. Spelare och bots delar serverns 10 platser. De manuella botkommandona lämnar en plats ledig. `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
+Om automatisk botpåfyllning redan har fyllt servern, börja med `!kick_bot`. Kör sedan exempelvis `!set_bot_t 20` för att fylla på T, eller lägg till en bot i taget med `!add_bot_t`. Standard är 25 platser totalt. Med fyra spelare inne finns det utrymme för 20 bots och en reservplats, så långt spelmotorn och kartan tillåter. Om serverns `.env` har ett äldre `CS2_MAXPLAYERS`-värde, ändra det till `25` och återskapa containern. Lägesprofilernas automatiska botkvot är fortfarande 10.
+
+`!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
 
 ## Spellägen
 
