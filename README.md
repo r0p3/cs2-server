@@ -36,7 +36,7 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 ## Kommandon
 
-Skriv `!` ensamt i spelchatten eller använd `!menu` när du har spawnat. RepServer visar en grafisk panel till vänster i spelvyn. Flytta med **W/S**, välj med **E** och gå tillbaka eller stäng med **R**. Panelen använder en egen spelentitet så att uppvärmningstimern kan ligga kvar.
+Skriv `!` ensamt i spelchatten eller använd `!menu` när du har spawnat. RepServer visar en grafisk panel till vänster i spelvyn. Spelaren står still medan panelen är öppen. Markera ett alternativ med **W/S**, välj med **E** och gå tillbaka eller stäng med **R**. Panelen använder en egen spelentitet så att uppvärmningstimern kan ligga kvar.
 
 Alla spelare kan se serverstatus. Admin får också menyer för kartor, spellägen, matchkontroller och bottar. Under **Bottar** kan du välja lag och justera målantalet innan du startar påfyllningen.
 
@@ -50,7 +50,8 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 | --- | --- | --- |
 | `!` eller `!menu` | Alla | Öppna menyn i spelet |
 | `!help`, `!maps`, `!modes`, `!status` | Alla | Visa kommandon, tillåtna kartor, spellägen eller serverstatus |
-| `!map de_mirage` | Admin | Byt till en karta i `config/maps.txt` |
+| `!map <namn>` | Alla för Workshop, admin för standardkartor | Byt karta efter namn |
+| `!add_map <workshoplänk> [namn]` | Alla | Spara en Workshop-karta i kartmenyn |
 | `!change-mode bot-dm` eller `!mode bot-dm` | Admin | Spara läget och starta om servern |
 | `!mode bot-game t` | Admin | Spela som T mot CT-bots |
 | `!live` | Admin | Avsluta uppvärmningen i bot-game |
@@ -70,7 +71,7 @@ När första spelaren har anslutit helt väntar RepServer minst fem sekunder inn
 
 ## Spellägen
 
-`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots.
+`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots. I båda matchvarianterna får spelare och bottar ett defuse kit när de spawnar. CS2:s bombregler låter CT desarmera bomben.
 
 Under uppvärmningen skriver spelarna `!ready` eller väljer **Redo för match** i menyn. Håll **Tab** för att se `[REDO]` framför namnen på de spelare som är redo. `!unready` tar bort din markering. När alla anslutna människor, inklusive åskådare, är redo avslutas uppvärmningen och markeringarna försvinner. `!readystatus` visar samma status i chatten vid behov. Admin kan starta matchen manuellt med `!live`.
 
@@ -79,6 +80,18 @@ Under uppvärmningen skriver spelarna `!ready` eller väljer **Redo för match**
 Vid första start används `bot-game`. Ett aktivt lägesval sparas i `data/state/mode`, så att en serveromstart fortsätter i det valda läget. Vid lägesbyte startar Docker om servern och spelarna ansluter igen. Spelarna ser aktuellt spelläge och karta i chatten vid anslutning. För att återställa grundläget manuellt, skriv `bot-game` i `data/state/mode` och kör `docker compose restart cs2`.
 
 När en vanlig karta laddas sparas den i `data/state/last-map`. Den laddas igen efter omstart, även vid lägesbyte. `CS2_STARTMAP` används när kartfilen saknas eller innehåller ett ogiltigt kartnamn. Ta bort `data/state/last-map` medan servern är stoppad om du vill använda startkartan från `.env` igen.
+
+## Workshop-kartor
+
+Klistra in kartans Steam Workshop-länk i spelchatten. Kartans Workshop-titel blir normalt dess kommandonamn. En karta med titeln **Black Gold** får namnet `black_gold`. Lägg till ett eget namn efter länken om du vill välja kommandonamnet själv.
+
+```text
+!add_map <Steam Workshop-länk>
+!add_map <Steam Workshop-länk> black_gold
+!map black_gold
+```
+
+När kartan är sparad kan spelarna även välja den via **! → Byt karta**. CS2 hämtar kartan när någon väljer att spela den. Listan sparas i `data/state/workshop-maps.json` och finns kvar vid omstart och ombyggnad. [Steamworks Workshop-API](https://partner.steamgames.com/doc/webapi/ISteamRemoteStorage#GetPublishedFileDetails)
 
 ## Uppdatera
 
@@ -91,4 +104,4 @@ Skriptet validerar Compose, bygger imagen före omstarten och återskapar contai
 
 CounterStrikeSharp och Metamod har fasta releaseversioner i Dockerfile. Basimagen använder en flytande tagg tills en image har provkörts. Sätt `CS2_BASE_IMAGE` till den verifierade digesten i `.env` när du har den. SteamCMD hanterar spelbuilden separat.
 
-Röstning, Workshop och automatiserad backup återstår enligt [planen](PLAN.md).
+Röstning och automatiserad backup återstår enligt [planen](PLAN.md).

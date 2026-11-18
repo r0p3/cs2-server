@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.5";
+    public override string ModuleVersion => "0.4.7";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -52,12 +52,30 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventPlayerSpawn>((@event, _) => StripNonPistols(@event.Userid));
             RegisterEventHandler<EventItemPickup>((@event, _) => StripNonPistols(@event.Userid));
         }
+        else if (activeMode is "bot-game" or "bot-game-t")
+        {
+            RegisterEventHandler<EventPlayerSpawn>((@event, _) =>
+            {
+                if (@event.Userid is { IsValid: true, IsHLTV: false } player &&
+                    player.PlayerPawn.Value is { IsValid: true })
+                {
+                    var pawnHandle = new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw);
+                    Server.NextWorldUpdate(() =>
+                    {
+                        if (pawnHandle.Value is { IsValid: true, ItemServices: { } items })
+                            items.As<CCSPlayer_ItemServices>().HasDefuser = true;
+                    });
+                }
+                return HookResult.Continue;
+            });
+        }
 
         maps = File.ReadLines("/opt/repserver/maps.txt")
             .Select(line => line.Trim())
             .Where(line => MapName.IsMatch(line))
             .Distinct(StringComparer.Ordinal)
             .ToArray();
+        LoadWorkshopMaps();
 
         LoadBotProfiles();
         LoadBotPriorities();
@@ -166,8 +184,14 @@ public sealed partial class RepServerPlugin : BasePlugin
             else
                 command.ReplyToCommand("[RepServer] Öppna menyn i spelet med !.");
         });
-        RegisterChatCommand("maps", "Visa tillåtna kartor", (_, command) =>
-            command.ReplyToCommand("[RepServer] " + string.Join(", ", maps)));
+        RegisterChatCommand("maps", "Visa tillåtna kartor", (player, command) =>
+        {
+            var choices = MapChoices(IsAdmin(player)).ToArray();
+            if (choices.Length == 0)
+                command.ReplyToCommand("[RepServer] Lägg till en Workshop-karta med !add_map <workshoplänk>.");
+            foreach (var group in choices.Chunk(6))
+                command.ReplyToCommand("[RepServer] " + string.Join(", ", group));
+        });
         RegisterChatCommand("status", "Visa pluginversion, karta och spelläge", (_, command) =>
             command.ReplyToCommand($"[RepServer] v{ModuleVersion} | karta: {Server.MapName} | läge: {ModeLabel(activeMode)}"));
         RegisterChatCommand("modes", "Visa spellägen", (_, command) =>
@@ -180,7 +204,9 @@ public sealed partial class RepServerPlugin : BasePlugin
             ShowReadyStatus(command.ReplyToCommand));
         RegisterChatCommand("change-mode", "Byt spelläge", ChangeMode, admin: true, arguments: "<läge>");
         RegisterChatCommand("mode", "Kortform av !change-mode", ChangeMode, admin: true, arguments: "<läge>");
-        RegisterChatCommand("map", "Byt karta", ChangeMap, admin: true, arguments: "<karta>");
+        RegisterChatCommand("map", "Byt karta (standardkartor kräver admin)", ChangeMap, arguments: "<namn>");
+        RegisterChatCommand("add_map", "Spara en Workshop-karta med valfritt eget namn", AddWorkshopMap,
+            arguments: "<workshoplänk> [namn]");
         RegisterChatCommand("restart", "Starta om matchen", (player, command) =>
             RunMatchCommand(player, command.ReplyToCommand, "mp_restartgame 1", "Startar om matchen."), admin: true);
         RegisterChatCommand("omstart", "Samma som !restart", (player, command) =>
@@ -670,8 +696,13 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void SelectMap(CCSPlayerController? player, Action<string> reply, string map)
     {
-        if (!CheckAdmin(player, reply))
+        map = map.ToLowerInvariant();
+        if (workshopMaps.TryGetValue(map, out var item))
+        {
+            Execute(player, $"host_workshop_map {item.Id.ToString(CultureInfo.InvariantCulture)}",
+                $"Laddar Workshop-kartan {item.Alias}.");
             return;
+        }
 
         if (!maps.Contains(map, StringComparer.Ordinal))
         {
@@ -679,7 +710,8 @@ public sealed partial class RepServerPlugin : BasePlugin
             return;
         }
 
-        Execute(player, $"changelevel {map}", $"Byter karta till {map}.");
+        if (CheckAdmin(player, reply))
+            Execute(player, $"changelevel {map}", $"Byter karta till {map}.");
     }
 
     private static void RunMatchCommand(CCSPlayerController? player, Action<string> reply, string action, string message)

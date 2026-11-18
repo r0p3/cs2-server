@@ -9,20 +9,24 @@ namespace RepServer;
 public sealed partial class RepServerPlugin
 {
     private const int MenuPageSize = 5;
+    private const MoveType_t MenuMoveType = MoveType_t.MOVETYPE_OBSOLETE;
     private const PlayerButtons MenuButtons =
         PlayerButtons.Forward | PlayerButtons.Back | PlayerButtons.Use | PlayerButtons.Reload;
     private readonly Dictionary<int, MenuSession> menus = new();
 
     private sealed record MenuOption(string Label, Action<CCSPlayerController> Select);
 
-    private sealed class MenuSession(string title, IReadOnlyList<MenuOption> options,
-        Action<CCSPlayerController>? back, CPointWorldText panel, PlayerButtons buttons)
+    private sealed class MenuSession(CPointWorldText panel, CHandle<CCSPlayerPawn> pawn,
+        MoveType_t moveType, MoveType_t actualMoveType)
     {
-        public string Title { get; } = title;
-        public IReadOnlyList<MenuOption> Options { get; } = options;
-        public Action<CCSPlayerController>? Back { get; } = back;
+        public string Title { get; set; } = "";
+        public IReadOnlyList<MenuOption> Options { get; set; } = [];
+        public Action<CCSPlayerController>? Back { get; set; }
         public CPointWorldText Panel { get; } = panel;
-        public PlayerButtons PreviousButtons { get; set; } = buttons;
+        public CHandle<CCSPlayerPawn> Pawn { get; } = pawn;
+        public MoveType_t MoveType { get; } = moveType;
+        public MoveType_t ActualMoveType { get; } = actualMoveType;
+        public PlayerButtons PreviousButtons { get; set; }
         public int Selected { get; set; }
     }
 
@@ -38,6 +42,7 @@ public sealed partial class RepServerPlugin
 
     public override void Unload(bool hotReload)
     {
+        workshopLifetime.Cancel();
         ResetReadyPlayers();
         CloseAllMenus();
     }
@@ -75,9 +80,11 @@ public sealed partial class RepServerPlugin
         };
         if (IsReadinessWarmup())
             options.Add(new("Redo för match", OpenReadyMenu));
-        if (IsAdmin(player))
-        {
+        var isAdmin = IsAdmin(player);
+        if (isAdmin || workshopMaps.Count != 0)
             options.Add(new("Byt karta", OpenMapMenu));
+        if (isAdmin)
+        {
             options.Add(new("Byt spelläge", OpenModeMenu));
             options.Add(new("Matchkontroller", OpenMatchMenu));
             options.Add(new("Bottar", OpenBotMenu));
@@ -99,7 +106,7 @@ public sealed partial class RepServerPlugin
     }
 
     private void OpenMapMenu(CCSPlayerController player) =>
-        OpenMenu(player, "Välj karta", maps.Select(map =>
+        OpenMenu(player, "Välj karta", MapChoices(IsAdmin(player)).Select(map =>
             new MenuOption(map, client => CompleteMenuAction(client, () => SelectMap(client, client.PrintToChat, map)))).ToArray(),
             OpenMainMenu);
 
@@ -165,16 +172,17 @@ public sealed partial class RepServerPlugin
     private void OpenMenu(CCSPlayerController player, string title, IReadOnlyList<MenuOption> options,
         Action<CCSPlayerController>? back = null)
     {
-        if (player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } || !player.PawnIsAlive)
+        if (player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } pawn || !player.PawnIsAlive)
         {
             player.PrintToChat("[RepServer] Gå med i ett lag och vänta tills du har spawnat för att öppna menyn.");
             return;
         }
 
-        var panel = menus.GetValueOrDefault(player.Slot)?.Panel;
-        if (panel is not { IsValid: true })
+        var session = menus.GetValueOrDefault(player.Slot);
+        if (session is null || !session.Panel.IsValid || session.Pawn.Raw != player.PlayerPawn.Raw)
         {
-            panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
+            CloseMenu(player.Slot);
+            var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
             if (panel is not { IsValid: true })
             {
                 player.PrintToChat("[RepServer] Kunde inte öppna den grafiska menyn.");
@@ -192,11 +200,19 @@ public sealed partial class RepServerPlugin
             panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
             panel.DispatchSpawn();
             panel.AcceptInput("Enable");
+
+            session = new MenuSession(panel, new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw),
+                pawn.MoveType, pawn.ActualMoveType);
+            SetMenuMovement(pawn, MenuMoveType, MenuMoveType);
+            menus[player.Slot] = session;
         }
 
-        var session = new MenuSession(title, options, back, panel, player.Buttons & MenuButtons);
-        menus[player.Slot] = session;
-        PositionMenuPanel(player, panel);
+        session.Title = title;
+        session.Options = options;
+        session.Back = back;
+        session.PreviousButtons = player.Buttons & MenuButtons;
+        session.Selected = 0;
+        PositionMenuPanel(player, session.Panel);
         RenderMenu(session);
     }
 
@@ -209,7 +225,9 @@ public sealed partial class RepServerPlugin
         {
             var player = Utilities.GetPlayerFromSlot(slot);
             if (player is not { IsValid: true, PawnIsAlive: true } ||
-                player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } ||
+                player.PlayerPawn.Raw != session.Pawn.Raw ||
+                player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } pawn ||
+                pawn.MoveType != MenuMoveType || pawn.ActualMoveType != MenuMoveType ||
                 !session.Panel.IsValid)
             {
                 CloseMenu(slot);
@@ -279,7 +297,7 @@ public sealed partial class RepServerPlugin
         for (var index = start; index < Math.Min(start + MenuPageSize, session.Options.Count); index++)
             lines.Add((index == session.Selected ? "> " : "   ") + session.Options[index].Label);
         lines.Add("");
-        lines.Add(session.Back is null ? "W/S Flytta   E Välj   R Stäng" : "W/S Flytta   E Välj   R Tillbaka");
+        lines.Add(session.Back is null ? "W/S Markera   E Välj   R Stäng" : "W/S Markera   E Välj   R Tillbaka");
         session.Panel.AcceptInput("SetMessage", value: string.Join('\n', lines));
     }
 
@@ -291,8 +309,21 @@ public sealed partial class RepServerPlugin
 
     private void CloseMenu(int slot)
     {
-        if (menus.Remove(slot, out var session) && session.Panel.IsValid)
+        if (!menus.Remove(slot, out var session))
+            return;
+
+        if (session.Pawn.Value is { IsValid: true } pawn &&
+            pawn.MoveType == MenuMoveType && pawn.ActualMoveType == MenuMoveType)
+            SetMenuMovement(pawn, session.MoveType, session.ActualMoveType);
+        if (session.Panel.IsValid)
             session.Panel.Remove();
+    }
+
+    private static void SetMenuMovement(CCSPlayerPawn pawn, MoveType_t moveType, MoveType_t actualMoveType)
+    {
+        pawn.MoveType = moveType;
+        pawn.ActualMoveType = actualMoveType;
+        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_MoveType");
     }
 
     private void CloseAllMenus()
