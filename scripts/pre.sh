@@ -134,10 +134,11 @@ repserver_restore_map() {
     local last_map
 
     if [[ -f "$map_file" ]]; then
-        if last_map=$(<"$map_file") && [[ "$last_map" =~ ^[a-z0-9_]{1,64}$ ]]; then
+        if last_map=$(<"$map_file") && [[ "$last_map" =~ ^[a-z0-9_]{1,64}$ ]] &&
+            grep -Eq "^[[:space:]]*${last_map}[[:space:]]*$" /opt/repserver/maps.txt; then
             CS2_STARTMAP="$last_map"
         else
-            echo "RepServer: kunde inte läsa en giltig karta från data/state/last-map. Använder startkartan." >&2
+            echo "RepServer: data/state/last-map innehåller ingen standardkarta från config/maps.txt. Använder startkartan." >&2
         fi
     fi
 

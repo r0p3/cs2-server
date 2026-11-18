@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.11";
+    public override string ModuleVersion => "0.4.12";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -328,9 +328,9 @@ public sealed partial class RepServerPlugin : BasePlugin
         AddTimer(3.0f, () => Server.ExecuteCommand("quit"));
     }
 
-    private static void RememberMap(string? map)
+    private void RememberMap(string? map)
     {
-        if (!string.IsNullOrEmpty(map) && MapName.IsMatch(map))
+        if (map is not null && maps.Contains(map, StringComparer.Ordinal))
             TrySaveState(LastMapFile, map);
     }
 

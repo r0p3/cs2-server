@@ -79,7 +79,7 @@ Under uppvärmningen skriver spelarna `!ready` eller väljer **Redo för match**
 
 Vid första start används `bot-game`. Ett aktivt lägesval sparas i `data/state/mode`, så att en serveromstart fortsätter i det valda läget. Vid lägesbyte startar Docker om servern och spelarna ansluter igen. Spelarna ser aktuellt spelläge och karta i chatten vid anslutning. För att återställa grundläget manuellt, skriv `bot-game` i `data/state/mode` och kör `docker compose restart cs2`.
 
-När en vanlig karta laddas sparas den i `data/state/last-map`. Den laddas igen efter omstart, även vid lägesbyte. `CS2_STARTMAP` används när kartfilen saknas eller innehåller ett ogiltigt kartnamn. Ta bort `data/state/last-map` medan servern är stoppad om du vill använda startkartan från `.env` igen.
+När en standardkarta från `config/maps.txt` laddas sparas den i `data/state/last-map`. Servern laddar den igen efter omstart, även vid lägesbyte. Efter spel på en Workshop-karta startar servern på den senast spelade standardkartan. `CS2_STARTMAP` används om den sparade kartan saknas i standardlistan. Ta bort `data/state/last-map` medan servern är stoppad om du vill använda startkartan från `.env` igen.
 
 ## Workshop-kartor
 
