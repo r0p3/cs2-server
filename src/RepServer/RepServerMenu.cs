@@ -32,8 +32,8 @@ public sealed partial class RepServerPlugin
 
     private void RegisterMenuListeners()
     {
-        AddCommandListener("say", (player, command) => OnMenuChat(player, command), HookMode.Pre);
-        AddCommandListener("say_team", (player, command) => OnMenuChat(player, command), HookMode.Pre);
+        AddCommandListener("say", OnRepServerChat, HookMode.Pre);
+        AddCommandListener("say_team", OnRepServerChat, HookMode.Pre);
         RegisterListener<Listeners.OnTick>(UpdateMenus);
         RegisterListener<Listeners.CheckTransmit>(FilterMenuPanels);
         RegisterListener<Listeners.OnClientDisconnect>(CloseMenu);
@@ -47,10 +47,22 @@ public sealed partial class RepServerPlugin
         CloseAllMenus();
     }
 
-    private HookResult OnMenuChat(CCSPlayerController? player, CommandInfo command)
+    private HookResult OnRepServerChat(CCSPlayerController? player, CommandInfo command)
     {
-        if (player is not { IsValid: true, IsBot: false, IsHLTV: false } ||
-            command.ArgCount != 2 || command.ArgByIndex(1).Trim() != "!")
+        if (player is not { IsValid: true, IsBot: false, IsHLTV: false })
+            return HookResult.Continue;
+
+        // Read the original chat line before CounterStrikeSharp tokenizes it as a console command.
+        var chat = command.ArgString.Trim().Trim('"');
+        var parts = chat.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length > 0 && (parts[0].Equals("!add_map", StringComparison.OrdinalIgnoreCase) ||
+                                 parts[0].Equals("/add_map", StringComparison.OrdinalIgnoreCase)))
+        {
+            AddWorkshopMap(player, parts.Length == 2 ? parts[1] : "", player.PrintToChat);
+            return HookResult.Handled;
+        }
+
+        if (chat.Trim() != "!")
             return HookResult.Continue;
 
         if (menus.ContainsKey(player.Slot))
@@ -191,9 +203,12 @@ public sealed partial class RepServerPlugin
 
             panel.FontName = "Arial Bold";
             panel.FontSize = 30;
-            panel.WorldUnitsPerPx = 0.017f;
+            panel.WorldUnitsPerPx = 0.022f;
             panel.Fullbright = true;
             panel.DrawBackground = true;
+            panel.BackgroundMaterialName = "materials/tools/toolsblack.vmat";
+            panel.BackgroundBorderWidth = 0.6f;
+            panel.BackgroundBorderHeight = 0.4f;
             panel.Color = Color.FromArgb(255, 238, 235, 227);
             panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
             panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_CENTER;

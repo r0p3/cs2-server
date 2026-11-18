@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.7";
+    public override string ModuleVersion => "0.4.8";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -21,7 +21,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private const string Modes = "bot-game, bot-dm, bot-dm-pistol";
     private const string BotTeamSettings = "bot_auto_vacate 1; mp_autoteambalance 0; mp_limitteams 0";
     private const int InitialBotCount = 10;
-    private const float BotFillInterval = 2.0f;
+    private const float BotFillInterval = 1.0f;
     private const float JoinGracePeriod = 5.0f;
     private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
@@ -205,7 +205,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterChatCommand("change-mode", "Byt spelläge", ChangeMode, admin: true, arguments: "<läge>");
         RegisterChatCommand("mode", "Kortform av !change-mode", ChangeMode, admin: true, arguments: "<läge>");
         RegisterChatCommand("map", "Byt karta (standardkartor kräver admin)", ChangeMap, arguments: "<namn>");
-        RegisterChatCommand("add_map", "Spara en Workshop-karta med valfritt eget namn", AddWorkshopMap,
+        RegisterChatCommand("add_map", "Spara en Workshop-karta med valfritt eget namn",
+            (player, command) => AddWorkshopMap(player, command.ArgString, command.ReplyToCommand),
             arguments: "<workshoplänk> [namn]");
         RegisterChatCommand("restart", "Starta om matchen", (player, command) =>
             RunMatchCommand(player, command.ReplyToCommand, "mp_restartgame 1", "Startar om matchen."), admin: true);

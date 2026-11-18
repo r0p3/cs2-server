@@ -3,7 +3,6 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
-using CounterStrikeSharp.API.Modules.Commands;
 
 namespace RepServer;
 
@@ -54,49 +53,60 @@ public sealed partial class RepServerPlugin
         }
     }
 
-    private void AddWorkshopMap(CCSPlayerController? player, CommandInfo command)
+    private void AddWorkshopMap(CCSPlayerController? player, string arguments, Action<string> reply)
     {
         if (player is not null && !IsHuman(player))
             return;
 
-        if (command.ArgCount is < 2 or > 3 || !TryGetWorkshopId(command.ArgByIndex(1), out var id))
+        var parts = arguments.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is < 1 or > 2)
         {
-            command.ReplyToCommand("[RepServer] Använd !add_map <Steam Workshop-länk> [namn].");
+            reply("[RepServer] Använd !add_map <Steam Workshop-länk> [namn].");
+            return;
+        }
+        if (!TryGetWorkshopId(parts[0].Trim('"', '<', '>'), out var id))
+        {
+            reply("[RepServer] Hittade inget kart-ID i länken. Kopiera kartans länk från Steam Workshop.");
             return;
         }
 
-        var alias = command.ArgCount == 3 ? command.ArgByIndex(2).ToLowerInvariant() : null;
+        var alias = parts.Length == 2 ? parts[1].Trim('"').ToLowerInvariant() : null;
         if (alias is not null && !MapName.IsMatch(alias))
         {
-            command.ReplyToCommand("[RepServer] Kartnamnet får ha 1–64 bokstäver (a–z), siffror eller understreck.");
+            reply("[RepServer] Kartnamnet får ha 1–64 bokstäver (a–z), siffror eller understreck.");
             return;
         }
         if (!workshopCatalogReadable)
         {
-            command.ReplyToCommand("[RepServer] Workshop-listan kunde inte läsas. Kontrollera data/state/workshop-maps.json.");
+            reply("[RepServer] Workshop-listan kunde inte läsas. Kontrollera data/state/workshop-maps.json.");
             return;
         }
         if (workshopMaps.Values.FirstOrDefault(item => item.Id == id) is { } existing)
         {
-            command.ReplyToCommand($"[RepServer] Kartan finns redan. Använd !map {existing.Alias}.");
+            reply($"[RepServer] Kartan finns redan. Använd !map {existing.Alias}.");
             return;
         }
         if (workshopLookupPending)
         {
-            command.ReplyToCommand("[RepServer] En Workshop-karta kontrolleras redan. Försök igen strax.");
+            reply("[RepServer] En Workshop-karta kontrolleras redan. Försök igen strax.");
             return;
         }
 
         workshopLookupPending = true;
-        command.ReplyToCommand("[RepServer] Hämtar kartans uppgifter från Steam Workshop …");
+        reply("[RepServer] Hämtar kartans uppgifter från Steam Workshop …");
         _ = LookupWorkshopMap(id, alias, player?.Slot, player?.UserId, workshopLifetime.Token);
     }
 
     private static bool TryGetWorkshopId(string link, out ulong id)
     {
         id = 0;
+        if (link.StartsWith("steamcommunity.com/", StringComparison.OrdinalIgnoreCase) ||
+            link.StartsWith("www.steamcommunity.com/", StringComparison.OrdinalIgnoreCase))
+            link = "https://" + link;
+
         if (!Uri.TryCreate(link, UriKind.Absolute, out var uri) ||
-            uri.Scheme is not ("https" or "http") || uri.Host != "steamcommunity.com" ||
+            uri.Scheme is not ("https" or "http") ||
+            uri.Host is not ("steamcommunity.com" or "www.steamcommunity.com") ||
             uri.AbsolutePath.TrimEnd('/') is not ("/sharedfiles/filedetails" or "/workshop/filedetails"))
             return false;
 
