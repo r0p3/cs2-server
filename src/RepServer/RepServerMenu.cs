@@ -9,23 +9,20 @@ namespace RepServer;
 public sealed partial class RepServerPlugin
 {
     private const int MenuPageSize = 5;
-    private const MoveType_t MenuMoveType = MoveType_t.MOVETYPE_OBSOLETE;
     private const PlayerButtons MenuButtons =
         PlayerButtons.Forward | PlayerButtons.Back | PlayerButtons.Use | PlayerButtons.Reload;
     private readonly Dictionary<int, MenuSession> menus = new();
 
     private sealed record MenuOption(string Label, Action<CCSPlayerController> Select);
 
-    private sealed class MenuSession(CPointWorldText panel, CHandle<CCSPlayerPawn> pawn,
-        MoveType_t moveType, MoveType_t actualMoveType)
+    private sealed class MenuSession(CPointWorldText panel, CHandle<CCSPlayerPawn> pawn, float velocityModifier)
     {
         public string Title { get; set; } = "";
         public IReadOnlyList<MenuOption> Options { get; set; } = [];
         public Action<CCSPlayerController>? Back { get; set; }
         public CPointWorldText Panel { get; } = panel;
         public CHandle<CCSPlayerPawn> Pawn { get; } = pawn;
-        public MoveType_t MoveType { get; } = moveType;
-        public MoveType_t ActualMoveType { get; } = actualMoveType;
+        public float VelocityModifier { get; } = velocityModifier;
         public PlayerButtons PreviousButtons { get; set; }
         public int Selected { get; set; }
     }
@@ -203,12 +200,9 @@ public sealed partial class RepServerPlugin
 
             panel.FontName = "Arial Bold";
             panel.FontSize = 30;
-            panel.WorldUnitsPerPx = 0.022f;
+            panel.WorldUnitsPerPx = 0.017f;
             panel.Fullbright = true;
             panel.DrawBackground = true;
-            panel.BackgroundMaterialName = "materials/tools/toolsblack.vmat";
-            panel.BackgroundBorderWidth = 0.6f;
-            panel.BackgroundBorderHeight = 0.4f;
             panel.Color = Color.FromArgb(255, 238, 235, 227);
             panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
             panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_CENTER;
@@ -217,8 +211,8 @@ public sealed partial class RepServerPlugin
             panel.AcceptInput("Enable");
 
             session = new MenuSession(panel, new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw),
-                pawn.MoveType, pawn.ActualMoveType);
-            SetMenuMovement(pawn, MenuMoveType, MenuMoveType);
+                pawn.VelocityModifier);
+            SetMenuSpeed(pawn, 0);
             menus[player.Slot] = session;
         }
 
@@ -242,13 +236,13 @@ public sealed partial class RepServerPlugin
             if (player is not { IsValid: true, PawnIsAlive: true } ||
                 player.PlayerPawn.Raw != session.Pawn.Raw ||
                 player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } pawn ||
-                pawn.MoveType != MenuMoveType || pawn.ActualMoveType != MenuMoveType ||
                 !session.Panel.IsValid)
             {
                 CloseMenu(slot);
                 continue;
             }
 
+            SetMenuSpeed(pawn, 0);
             PositionMenuPanel(player, session.Panel);
             var buttons = player.Buttons & MenuButtons;
             var pressed = buttons & ~session.PreviousButtons;
@@ -327,18 +321,19 @@ public sealed partial class RepServerPlugin
         if (!menus.Remove(slot, out var session))
             return;
 
-        if (session.Pawn.Value is { IsValid: true } pawn &&
-            pawn.MoveType == MenuMoveType && pawn.ActualMoveType == MenuMoveType)
-            SetMenuMovement(pawn, session.MoveType, session.ActualMoveType);
+        if (session.Pawn.Value is { IsValid: true } pawn)
+            SetMenuSpeed(pawn, session.VelocityModifier);
         if (session.Panel.IsValid)
             session.Panel.Remove();
     }
 
-    private static void SetMenuMovement(CCSPlayerPawn pawn, MoveType_t moveType, MoveType_t actualMoveType)
+    private static void SetMenuSpeed(CCSPlayerPawn pawn, float velocityModifier)
     {
-        pawn.MoveType = moveType;
-        pawn.ActualMoveType = actualMoveType;
-        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_MoveType");
+        if (pawn.VelocityModifier == velocityModifier)
+            return;
+
+        pawn.VelocityModifier = velocityModifier;
+        Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_flVelocityModifier");
     }
 
     private void CloseAllMenus()
