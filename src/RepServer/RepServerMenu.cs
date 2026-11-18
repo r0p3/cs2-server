@@ -200,12 +200,12 @@ public sealed partial class RepServerPlugin
 
             panel.FontName = "Arial Bold";
             panel.FontSize = 30;
-            panel.WorldUnitsPerPx = 0.017f;
+            panel.WorldUnitsPerPx = 0.021f;
             panel.Fullbright = true;
             panel.DrawBackground = true;
             panel.Color = Color.FromArgb(255, 238, 235, 227);
             panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
-            panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_CENTER;
+            panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_TOP;
             panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
             panel.DispatchSpawn();
             panel.AcceptInput("Enable");
@@ -277,11 +277,15 @@ public sealed partial class RepServerPlugin
         const float radians = MathF.PI / 180;
         var (sinYaw, cosYaw) = MathF.SinCos(look.Y * radians);
         var (sinPitch, cosPitch) = MathF.SinCos(look.X * radians);
-        // Place the panel in front of the camera and to the left of the crosshair.
+        const float depth = 24;
+        const float left = 16;
+        const float up = 9;
+        var horizontalForward = depth * cosPitch + up * sinPitch;
+        // Offset along the camera's left and up axes so the menu follows the view.
         var position = new Vector(
-            origin.X + 24 * cosPitch * cosYaw - 12 * sinYaw,
-            origin.Y + 24 * cosPitch * sinYaw + 12 * cosYaw,
-            origin.Z + pawn.ViewOffset.Z - 24 * sinPitch);
+            origin.X + horizontalForward * cosYaw - left * sinYaw,
+            origin.Y + horizontalForward * sinYaw + left * cosYaw,
+            origin.Z + pawn.ViewOffset.Z - depth * sinPitch + up * cosPitch);
         panel.Teleport(position, new QAngle(0, look.Y - 90, 90 - look.X));
     }
 

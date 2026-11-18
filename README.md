@@ -36,7 +36,7 @@ Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinst
 
 ## Kommandon
 
-Skriv `!` ensamt i spelchatten eller använd `!menu` när du har spawnat. RepServer visar en grafisk panel till vänster i spelvyn. Spelaren står still medan panelen är öppen. Markera ett alternativ med **W/S**, välj med **E** och gå tillbaka eller stäng med **R**. Panelen använder en egen spelentitet så att uppvärmningstimern kan ligga kvar.
+Skriv `!` ensamt i spelchatten eller använd `!menu` när du har spawnat. RepServer visar en grafisk panel mot det övre vänstra hörnet. Spelaren står still medan panelen är öppen. Markera ett alternativ med **W/S**, välj med **E** och gå tillbaka eller stäng med **R**. Panelen använder en egen spelentitet så att uppvärmningstimern kan ligga kvar.
 
 Alla spelare kan se serverstatus. Admin får också menyer för kartor, spellägen, matchkontroller och bottar. Under **Bottar** kan du välja lag och justera målantalet innan du startar påfyllningen.
 
@@ -59,7 +59,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 | `!restart` eller `!omstart` | Admin | Starta om matchen |
 | `!pause`, `!unpause` | Admin | Begär matchpaus eller återuppta matchen |
 | `!kick_bot` | Admin | Ta bort alla bots och stäng av automatisk botpåfyllning på aktuell karta |
-| `!add_bot_t`, `!add_bot_ct` | Admin | Lägg till en bot på T respektive CT om det finns plats |
+| `!bot_add_t [antal]`, `!bot_add_ct [antal]` | Admin | Lägg till så många bottar på valt lag som får plats. Utan antal läggs en till. `!add_bot_t` och `!add_bot_ct` fungerar också. |
 | `!set_bot_t <antal>`, `!set_bot_ct <antal>` | Admin | Fyll på valt lag med bots upp till antalet du anger, så långt platserna räcker |
 | `!bot_roster <antal>` | Alla | Förhandsvisa namn och roller för valt antal bottar |
 

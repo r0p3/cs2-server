@@ -13,7 +13,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.10";
+    public override string ModuleVersion => "0.4.11";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -217,10 +217,14 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterChatCommand("unpause", "Återuppta matchen", (player, command) =>
             RunMatchCommand(player, command.ReplyToCommand, "mp_unpause_match", "Begär att matchen återupptas."), admin: true);
         RegisterChatCommand("kick_bot", "Ta bort alla bots och stäng av påfyllning", (player, command) => KickBots(player, command.ReplyToCommand), admin: true);
-        RegisterChatCommand("add_bot_t", "Lägg till en bot på T", (player, command) =>
-            AddBot(player, command.ReplyToCommand, CsTeam.Terrorist), admin: true);
-        RegisterChatCommand("add_bot_ct", "Lägg till en bot på CT", (player, command) =>
-            AddBot(player, command.ReplyToCommand, CsTeam.CounterTerrorist), admin: true);
+        RegisterChatCommand("bot_add_t", "Lägg till bottar på T", (player, command) =>
+            AddBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "[antal]");
+        RegisterChatCommand("bot_add_ct", "Lägg till bottar på CT", (player, command) =>
+            AddBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "[antal]");
+        RegisterChatCommand("add_bot_t", "Samma som !bot_add_t", (player, command) =>
+            AddBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "[antal]");
+        RegisterChatCommand("add_bot_ct", "Samma som !bot_add_ct", (player, command) =>
+            AddBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "[antal]");
         RegisterChatCommand("set_bot_t", "Fyll på T upp till valt antal bots", (player, command) =>
             SetBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "<antal>");
         RegisterChatCommand("set_bot_ct", "Fyll på CT upp till valt antal bots", (player, command) =>
@@ -474,8 +478,25 @@ public sealed partial class RepServerPlugin : BasePlugin
         return new Queue<BotProfile>(candidates.OrderByDescending(profile => priorityBotNames.Contains(profile.Name)));
     }
 
-    private void AddBot(CCSPlayerController? player, Action<string> reply, CsTeam team) =>
-        SetBots(player, reply, team, CurrentBots().Count(bot => bot.TeamNum == (byte)team) + 1);
+    private void AddBot(CCSPlayerController? player, Action<string> reply, CsTeam team, int count = 1)
+    {
+        var current = CurrentBots().Count(bot => bot.TeamNum == (byte)team);
+        SetBots(player, reply, team, Math.Min(current + count, PlayerLimit));
+    }
+
+    private void AddBotsFromCommand(CCSPlayerController? player, CommandInfo command, CsTeam team)
+    {
+        var count = 1;
+        if (command.ArgCount > 1 && (command.ArgCount != 2 ||
+            !int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out count) ||
+            count < 1 || count > PlayerLimit))
+        {
+            command.ReplyToCommand($"[RepServer] Ange ett heltal mellan 1 och {PlayerLimit}.");
+            return;
+        }
+
+        AddBot(player, command.ReplyToCommand, team, count);
+    }
 
     private void SetBotsFromCommand(CCSPlayerController? player, CommandInfo command, CsTeam team)
     {
