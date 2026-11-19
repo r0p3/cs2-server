@@ -23,6 +23,13 @@ public sealed partial class RepServerPlugin
     private readonly CancellationTokenSource workshopLifetime = new();
     private bool workshopLookupPending;
     private bool workshopCatalogReadable = true;
+    private ulong lastConsoleWorkshopId;
+    private string lastConsoleWorkshopResult = "";
+
+    private string WorkshopResult(string id) =>
+        lastConsoleWorkshopId != 0 && id == lastConsoleWorkshopId.ToString(CultureInfo.InvariantCulture)
+            ? lastConsoleWorkshopResult
+            : "[RepServer] No console lookup matches this Workshop ID.";
 
     private IEnumerable<string> MapChoices(bool includeStandard) =>
         (includeStandard ? maps : Array.Empty<string>()).Concat(workshopMaps.Keys.Order(StringComparer.Ordinal));
@@ -49,7 +56,7 @@ public sealed partial class RepServerPlugin
         {
             workshopMaps.Clear();
             workshopCatalogReadable = false;
-            Console.Error.WriteLine($"[RepServer] Kunde inte läsa workshop-maps.json: {exception.GetType().Name}");
+            Console.Error.WriteLine($"[RepServer] Could not read workshop-maps.json: {exception.GetType().Name}");
         }
     }
 
@@ -61,39 +68,48 @@ public sealed partial class RepServerPlugin
         var parts = arguments.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length is < 1 or > 2)
         {
-            reply("[RepServer] Använd !add_map <Steam Workshop-länk> [namn].");
+            reply("[RepServer] Use !add_map <workshop_url> [name].");
             return;
         }
         if (!TryGetWorkshopId(parts[0].Trim('"', '<', '>'), out var id))
         {
-            reply("[RepServer] Hittade inget kart-ID i länken. Kopiera kartans länk från Steam Workshop.");
+            reply("[RepServer] No map ID found. Copy the map link from Steam Workshop.");
             return;
         }
 
         var alias = parts.Length == 2 ? parts[1].Trim('"').ToLowerInvariant() : null;
         if (alias is not null && !MapName.IsMatch(alias))
         {
-            reply("[RepServer] Kartnamnet får ha 1–64 bokstäver (a–z), siffror eller understreck.");
+            reply("[RepServer] Map aliases must contain 1–64 lowercase letters (a–z), digits or underscores.");
             return;
         }
         if (!workshopCatalogReadable)
         {
-            reply("[RepServer] Workshop-listan kunde inte läsas. Kontrollera data/state/workshop-maps.json.");
+            reply("[RepServer] Could not read the Workshop catalog. Check data/state/workshop-maps.json.");
             return;
         }
         if (workshopMaps.Values.FirstOrDefault(item => item.Id == id) is { } existing)
         {
-            reply($"[RepServer] Kartan finns redan. Använd !map {existing.Alias}.");
+            reply($"[RepServer] This map is already saved. Use !map {existing.Alias}.");
             return;
         }
         if (workshopLookupPending)
         {
-            reply("[RepServer] En Workshop-karta kontrolleras redan. Försök igen strax.");
+            reply("[RepServer] A Workshop lookup is already running. Try again shortly.");
             return;
         }
 
         workshopLookupPending = true;
-        reply("[RepServer] Hämtar kartans uppgifter från Steam Workshop …");
+        if (player is null)
+        {
+            lastConsoleWorkshopId = id;
+            lastConsoleWorkshopResult = "[RepServer] Workshop lookup pending.";
+            reply(lastConsoleWorkshopResult);
+        }
+        else
+        {
+            reply("[RepServer] Looking up the map on Steam Workshop...");
+        }
         _ = LookupWorkshopMap(id, alias, player?.Slot, player?.UserId, workshopLifetime.Token);
     }
 
@@ -120,7 +136,7 @@ public sealed partial class RepServerPlugin
     private async Task LookupWorkshopMap(ulong id, string? alias, int? slot, int? userId, CancellationToken cancellation)
     {
         string? title = null;
-        var error = "[RepServer] Steam hittade ingen tillgänglig Counter-Strike-karta för länken.";
+        var error = "[RepServer] Steam could not find an available Counter-Strike map for that link.";
         try
         {
             using var form = new FormUrlEncodedContent(new Dictionary<string, string>
@@ -141,7 +157,7 @@ public sealed partial class RepServerPlugin
         catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or
             JsonException or InvalidOperationException or KeyNotFoundException or IndexOutOfRangeException or FormatException)
         {
-            error = "[RepServer] Steam Workshop svarade inte med kartuppgifter. Försök igen strax.";
+            error = "[RepServer] Steam Workshop did not return map details. Try again shortly.";
         }
 
         if (cancellation.IsCancellationRequested)
@@ -155,6 +171,8 @@ public sealed partial class RepServerPlugin
             void Reply(string message)
             {
                 Console.WriteLine(message);
+                if (slot is null)
+                    lastConsoleWorkshopResult = message;
                 if (player is { IsValid: true } && player.UserId == userId)
                     player.PrintToChat(message);
             }
@@ -177,24 +195,24 @@ public sealed partial class RepServerPlugin
             alias = WorkshopAliasSeparators.Replace(name.ToLowerInvariant(), "_").Trim('_');
             if (!MapName.IsMatch(alias))
             {
-                reply("[RepServer] Ange ett kort kartnamn med !add_map <länk> <namn>.");
+                reply("[RepServer] Specify a short alias with !add_map <workshop_url> <name>.");
                 return;
             }
         }
 
         if (maps.Contains(alias, StringComparer.Ordinal) || workshopMaps.ContainsKey(alias))
         {
-            reply($"[RepServer] Namnet {alias} är upptaget. Använd !add_map <länk> <annat_namn>.");
+            reply($"[RepServer] The alias {alias} is taken. Use !add_map <workshop_url> <different_name>.");
             return;
         }
 
         var item = new WorkshopMap(id, alias, title);
         if (!TrySaveState(WorkshopMapFile, JsonSerializer.Serialize(workshopMaps.Values.Append(item))))
         {
-            reply("[RepServer] Workshop-kartan kunde inte sparas. Kontrollera data/state på servern.");
+            reply("[RepServer] Could not save the Workshop map. Check data/state on the server.");
             return;
         }
         workshopMaps.Add(alias, item);
-        reply($"[RepServer] {alias} finns nu i kartmenyn. Du kan också skriva !map {alias}.");
+        reply($"[RepServer] {alias} is now in the map menu. You can also use !map {alias}.");
     }
 }

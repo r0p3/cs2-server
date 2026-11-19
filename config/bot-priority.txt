@@ -1,7 +1,7 @@
-# Ett prioriterat namn per rad. Använd namn som redan finns i bot-names.txt.
-# Prioriterade namn lottas före övriga inom samma roll.
+# One priority name per line. Use names from bot-names.txt.
+# Priority names are drawn first within each role.
 Petter Toivonen
 Rolf Mjunstedt
-Diskvatten
+Dishwater
 r0p3
 Pliip

@@ -40,6 +40,7 @@ public sealed partial class RepServerPlugin
     public override void Unload(bool hotReload)
     {
         workshopLifetime.Cancel();
+        StopChallenge();
         ResetReadyPlayers();
         CloseAllMenus();
     }
@@ -49,23 +50,24 @@ public sealed partial class RepServerPlugin
         if (player is not { IsValid: true, IsBot: false, IsHLTV: false })
             return HookResult.Continue;
 
-        // Read the original chat line before CounterStrikeSharp tokenizes it as a console command.
-        var chat = command.ArgString.Trim().Trim('"');
-        var parts = chat.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length > 0 && (parts[0].Equals("!add_map", StringComparison.OrdinalIgnoreCase) ||
-                                 parts[0].Equals("/add_map", StringComparison.OrdinalIgnoreCase)))
+        // Parse chat from both the chat box and bound say/say_team commands.
+        var chat = command.ArgString.Trim().Trim('"').Trim();
+        if (chat == "!")
         {
-            AddWorkshopMap(player, parts.Length == 2 ? parts[1] : "", player.PrintToChat);
+            if (menus.ContainsKey(player.Slot))
+                CloseMenu(player.Slot);
+            else
+                QueueOpenMenu(player);
             return HookResult.Handled;
         }
-
-        if (chat.Trim() != "!")
+        if (chat.Length == 0 || chat[0] is not ('!' or '/'))
             return HookResult.Continue;
 
-        if (menus.ContainsKey(player.Slot))
-            CloseMenu(player.Slot);
-        else
-            QueueOpenMenu(player);
+        var parts = chat.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (!chatCommands.TryGetValue(parts[0][1..], out var handler))
+            return HookResult.Continue;
+
+        handler(player, parts[1..].Select(arg => arg.Trim('"')).ToArray(), player.PrintToChat);
         return HookResult.Handled;
     }
 
@@ -84,19 +86,19 @@ public sealed partial class RepServerPlugin
     {
         var options = new List<MenuOption>
         {
-            new("Serverstatus", client => CompleteMenuAction(client, () =>
+            new("Server status", client => CompleteMenuAction(client, () =>
                 client.PrintToChat($"[RepServer] {ModeLabel(activeMode)} | {Server.MapName} | v{ModuleVersion}")))
         };
         if (IsReadinessWarmup())
-            options.Add(new("Redo för match", OpenReadyMenu));
+            options.Add(new("Match readiness", OpenReadyMenu));
         var isAdmin = IsAdmin(player);
         if (isAdmin || workshopMaps.Count != 0)
-            options.Add(new("Byt karta", OpenMapMenu));
+            options.Add(new("Change map", OpenMapMenu));
         if (isAdmin)
         {
-            options.Add(new("Byt spelläge", OpenModeMenu));
-            options.Add(new("Matchkontroller", OpenMatchMenu));
-            options.Add(new("Bottar", OpenBotMenu));
+            options.Add(new("Change game mode", OpenModeMenu));
+            options.Add(new("Match controls", OpenMatchMenu));
+            options.Add(new("Bots", OpenBotMenu));
         }
 
         OpenMenu(player, "RepServer", options);
@@ -106,75 +108,75 @@ public sealed partial class RepServerPlugin
     {
         var humans = ConnectedHumans();
         var ready = humans.Count(IsReady);
-        OpenMenu(player, $"Redo för match ({ready}/{humans.Length})",
+        OpenMenu(player, $"Match readiness ({ready}/{humans.Length})",
         [
-            new("Jag är redo", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, true))),
-            new("Ta tillbaka redo", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, false))),
-            new("Visa vilka som är redo", client => CompleteMenuAction(client, () => ShowReadyStatus(client.PrintToChat)))
+            new("Mark me as ready", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, true))),
+            new("Mark me as not ready", client => CompleteMenuAction(client, () => SetReady(client, client.PrintToChat, false))),
+            new("Show who is ready", client => CompleteMenuAction(client, () => ShowReadyStatus(client.PrintToChat)))
         ], OpenMainMenu);
     }
 
     private void OpenMapMenu(CCSPlayerController player) =>
-        OpenMenu(player, "Välj karta", MapChoices(IsAdmin(player)).Select(map =>
+        OpenMenu(player, "Select map", MapChoices(IsAdmin(player)).Select(map =>
             new MenuOption(map, client => CompleteMenuAction(client, () => SelectMap(client, client.PrintToChat, map)))).ToArray(),
             OpenMainMenu);
 
     private void OpenModeMenu(CCSPlayerController player)
     {
         var options = new[] { "bot-game", "bot-game-t", "bot-dm", "bot-dm-pistol" }.Select(mode =>
-            new MenuOption(ModeLabel(mode), client => OpenMenu(client, "Byt läge och starta om?",
-                [new("Bekräfta", confirmed => CompleteMenuAction(confirmed,
+            new MenuOption(ModeLabel(mode), client => OpenMenu(client, "Change mode and restart the server?",
+                [new("Confirm", confirmed => CompleteMenuAction(confirmed,
                     () => SelectMode(confirmed, confirmed.PrintToChat, mode)))], OpenModeMenu))).ToArray();
-        OpenMenu(player, "Välj spelläge", options, OpenMainMenu);
+        OpenMenu(player, "Select game mode", options, OpenMainMenu);
     }
 
     private void OpenMatchMenu(CCSPlayerController player) =>
-        OpenMenu(player, "Matchkontroller",
+        OpenMenu(player, "Match controls",
         [
-            MatchOption("Starta om matchen", "mp_restartgame 1", "Startar om matchen."),
-            MatchOption("Pausa", "mp_pause_match", "Begär matchpaus."),
-            MatchOption("Återuppta", "mp_unpause_match", "Begär att matchen återupptas."),
-            new("Avsluta uppvärmning", client => CompleteMenuAction(client, () => StartMatch(client, client.PrintToChat)))
+            MatchOption("Restart the match", "mp_restartgame 1", "Restarting the match."),
+            MatchOption("Pause match", "mp_pause_match", "Requesting a match pause."),
+            MatchOption("Resume match", "mp_unpause_match", "Requesting that the match resume."),
+            new("End warmup", client => CompleteMenuAction(client, () => StartMatch(client, client.PrintToChat)))
         ], OpenMainMenu);
 
     private MenuOption MatchOption(string label, string action, string message) =>
         new(label, client => CompleteMenuAction(client, () => RunMatchCommand(client, client.PrintToChat, action, message)));
 
     private void OpenBotMenu(CCSPlayerController player) =>
-        OpenMenu(player, "Bottar",
+        OpenMenu(player, "Bots",
         [
-            new("Välj antal på T", client => OpenBotCountMenu(client, CsTeam.Terrorist, 5)),
-            new("Välj antal på CT", client => OpenBotCountMenu(client, CsTeam.CounterTerrorist, 5)),
-            new("Botnamn", OpenBotNameMenu),
-            new("Lägg till en på T", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, CsTeam.Terrorist))),
-            new("Lägg till en på CT", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, CsTeam.CounterTerrorist))),
-            new("Ta bort alla bottar", client => CompleteMenuAction(client, () => KickBots(client, client.PrintToChat)))
+            new("Set T bot target", client => OpenBotCountMenu(client, CsTeam.Terrorist, 5)),
+            new("Set CT bot target", client => OpenBotCountMenu(client, CsTeam.CounterTerrorist, 5)),
+            new("Bot names", OpenBotNameMenu),
+            new("Add one bot to T", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, CsTeam.Terrorist))),
+            new("Add one bot to CT", client => CompleteMenuAction(client, () => AddBot(client, client.PrintToChat, CsTeam.CounterTerrorist))),
+            new("Remove all bots", client => CompleteMenuAction(client, () => KickBots(client, client.PrintToChat)))
         ], OpenMainMenu);
 
     private void OpenBotNameMenu(CCSPlayerController player)
     {
         if (botProfiles.Count == 0)
         {
-            player.PrintToChat("[RepServer] Namnlistan är tom. Lägg till namn i config/bot-names.txt.");
+            player.PrintToChat("[RepServer] The bot roster is empty. Add names in config/bot-names.txt.");
             return;
         }
 
         var options = botProfiles.Select(profile => new MenuOption($"{profile.Name} · {profile.Role}",
             client => client.PrintToChat($"[RepServer] {profile.Name} · {profile.Role}"))).ToArray();
-        OpenMenu(player, "Botlistan", options, OpenBotMenu);
+        OpenMenu(player, "Bot roster", options, OpenBotMenu);
     }
 
     private void OpenBotCountMenu(CCSPlayerController player, CsTeam team, int requested)
     {
         var target = Math.Clamp(requested, 1, Math.Max(1, PlayerLimit));
         var teamName = team == CsTeam.Terrorist ? "T" : "CT";
-        OpenMenu(player, $"{teamName} · {target} bottar",
+        OpenMenu(player, $"{teamName} · {target} bots",
         [
-            new($"Fyll på till {target}", client => CompleteMenuAction(client, () => SetBots(client, client.PrintToChat, team, target))),
-            new("Öka med 1", client => OpenBotCountMenu(client, team, target + 1)),
-            new("Öka med 5", client => OpenBotCountMenu(client, team, target + 5)),
-            new("Minska med 1", client => OpenBotCountMenu(client, team, target - 1)),
-            new("Minska med 5", client => OpenBotCountMenu(client, team, target - 5))
+            new($"Fill to {target}", client => CompleteMenuAction(client, () => SetBots(client, client.PrintToChat, team, target))),
+            new("Increase by 1", client => OpenBotCountMenu(client, team, target + 1)),
+            new("Increase by 5", client => OpenBotCountMenu(client, team, target + 5)),
+            new("Decrease by 1", client => OpenBotCountMenu(client, team, target - 1)),
+            new("Decrease by 5", client => OpenBotCountMenu(client, team, target - 5))
         ], OpenBotMenu);
     }
 
@@ -183,7 +185,7 @@ public sealed partial class RepServerPlugin
     {
         if (player.PlayerPawn.Value is not { IsValid: true, MovementServices: not null } pawn || !player.PawnIsAlive)
         {
-            player.PrintToChat("[RepServer] Gå med i ett lag och vänta tills du har spawnat för att öppna menyn.");
+            player.PrintToChat("[RepServer] Join a team and spawn to open the menu.");
             return;
         }
 
@@ -194,7 +196,7 @@ public sealed partial class RepServerPlugin
             var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
             if (panel is not { IsValid: true })
             {
-                player.PrintToChat("[RepServer] Kunde inte öppna den grafiska menyn.");
+                player.PrintToChat("[RepServer] Could not open the menu.");
                 return;
             }
 
@@ -310,7 +312,7 @@ public sealed partial class RepServerPlugin
         for (var index = start; index < Math.Min(start + MenuPageSize, session.Options.Count); index++)
             lines.Add((index == session.Selected ? "> " : "   ") + session.Options[index].Label);
         lines.Add("");
-        lines.Add(session.Back is null ? "W/S Markera   E Välj   R Stäng" : "W/S Markera   E Välj   R Tillbaka");
+        lines.Add(session.Back is null ? "W/S Move   E Select   R Close" : "W/S Move   E Select   R Back");
         session.Panel.AcceptInput("SetMessage", value: string.Join('\n', lines));
     }
 

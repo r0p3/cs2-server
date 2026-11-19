@@ -1,107 +1,131 @@
-# Repserver
+# RepServer
 
-Privat CS2-server med Metamod:Source, CounterStrikeSharp och ett eget plugin. [PLAN.md](PLAN.md) beskriver kommande spellägen, röstning och Workshop-stöd.
+A private CS2 server with Metamod:Source, CounterStrikeSharp, and the RepServer plugin. [PLAN.md](PLAN.md) records the original design and future work.
 
-## Första starten
+## First start
 
-Du behöver Docker med Compose v2, en Linux-server för x86-64 och minst 60 GB ledigt diskutrymme. Serverprocessen kör som uid/gid 1000 i containern.
+You need Docker with Compose v2, an x86-64 Linux host, and at least 60 GB of free disk space. The server process runs as UID/GID 1000 inside the container.
 
 ```bash
 install -m 600 .env.example .env
 mkdir -p data/server data/state
 ```
 
-Fyll i `.env` med en ny Steam-server-token och nya lösenord. Värdena som tidigare låg i Compose-filen bör bytas. Använd minst 8 bokstäver/siffror för spellösenordet och minst 16 för RCON. Serverimagen bygger sitt startkommando med skalexpansion, så lösenord och startkarta använder en begränsad teckenuppsättning. Om du ändrar servernamnet, använd bokstäver, siffror, mellanslag och bindestreck.
+Fill in `.env` with a new Steam game server token, a game password of at least 8 letters or digits, and an RCON password of at least 16 letters or digits. The base image uses shell expansion to start the server. Use letters, digits, spaces, and hyphens in the server name.
 
-Om värdens användare har ett annat uid än 1000, justera ägarskapet för katalogerna så att containern kan skriva där. Vid nyinstallation räcker `sudo chown 1000:1000 data/server data/state`. Sätt administratörernas SteamID64 i `data/state/admins.txt`, ett ID per rad, och se till att filen är läsbar för uid 1000. Pluginet läser listan vid varje adminåtgärd.
+Make sure the container can write to both data directories. On a fresh installation, run `sudo chown 1000:1000 data/server data/state` if they have a different owner. To grant in-game admin access, add one SteamID64 per line to `data/state/admins.txt` and make the file readable by UID 1000. The plugin reloads that list for each admin action.
 
-Har du en befintlig installation, följ migreringen nedan innan du startar den nya containern. För en ny server kör du:
+For a fresh installation, start the server with:
 
 ```bash
 ./scripts/update.sh
 docker compose logs -f cs2
 ```
 
-Verifiera att RepServer är laddad i loggen och kör `meta list` i serverkonsolen. Anslut som spelare, kontrollera att kommandolistan visas i chatten och kör `!status`. Första SteamCMD-hämtningen kan ta en stund. UDP exponeras för spelarna, medan TCP för RCON är bunden till localhost.
+Check the startup log and run `meta list` in the server console. Join the server, look for the command list in chat, and try `!status`. The first SteamCMD download can take a while. Compose exposes UDP to players and binds RCON TCP to localhost.
 
-Om du testar bredvid den gamla servern, sätt `CS2_PUBLIC_PORT=27016` i testinstallationens `.env` och anslut på port 27016. Använd olika Compose-projektnamn om båda mapparna heter `cs2-server`. Sätt då till exempel `COMPOSE_PROJECT_NAME=cs2-server-test` i testinstallationens `.env` så att vanliga Compose-kommandon i den mappen riktas till testprojektet.
+For a side-by-side test, use a different port, such as `CS2_PUBLIC_PORT=27016`. If the two checkouts have the same directory name, also set a unique `COMPOSE_PROJECT_NAME` in the test installation's `.env`.
 
-## Flytta befintlig serverdata
+## Remote admin panel
 
-1. Ta en kopia av gamla Compose-inställningar och katalogen `/home/r0p3/data/gameservers/cs2-data`. Inventera egna cfg-filer, plugins och eventuella gamla startskript.
-2. Stoppa den befintliga servern på värden. Kontrollera att `data/server` är tom och kör `rsync -a /home/r0p3/data/gameservers/cs2-data/ data/server/` som en användare med rätt att läsa källan och bevara ägarskapet.
-3. Kontrollera kopian och skrivbehörigheten för uid 1000. Imagen innehåller RepServers eget `pre.sh`. Flytta över eventuella anpassningar från det gamla skriptet som du behöver behålla. Upstream skapar om `server.cfg` vid uppstart.
-4. Kör `./scripts/update.sh`. Compose väljer containernamn utifrån projektnamnet. Om båda installationerna ska köras samtidigt måste de också använda olika värdportar.
-5. Kontrollera anslutning, kartor och plugin. Behåll källkatalogen och backupen tills servern har provkörts.
+Copy [scripts/cs2-admin.py](scripts/cs2-admin.py) to your admin computer. You need Python 3.9+ with Tkinter and an SSH client. On Debian or Ubuntu, Tkinter is available as `python3-tk`.
 
-## Kommandon
+1. Update the server with `./scripts/update.sh` so it runs the English plugin and reports Workshop results.
+2. On your admin computer, open a terminal and start an SSH tunnel. Replace `user@server` with your SSH login and host. The last port must match `CS2_PUBLIC_PORT` on the server.
 
-Skriv `!` ensamt i spelchatten eller använd `!menu` när du har spawnat. RepServer visar en grafisk panel mot det övre vänstra hörnet. Spelaren står still medan panelen är öppen. Markera ett alternativ med **W/S**, välj med **E** och gå tillbaka eller stäng med **R**. Panelen använder en egen spelentitet så att uppvärmningstimern kan ligga kvar.
+   ```sh
+   ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:27016:127.0.0.1:27015 user@server
+   ```
 
-Alla spelare kan se serverstatus. Admin får också menyer för kartor, spellägen, matchkontroller och bottar. Under **Bottar** kan du välja lag och justera målantalet innan du startar påfyllningen.
+3. Leave the tunnel running and launch the panel in another terminal.
 
-Redigera [config/bot-names.txt](config/bot-names.txt) för att lägga till eller byta namn. Skriv `Namn | rifle` eller `Namn | sniper`, ett namn per rad (högst 31 byte i UTF-8), och bygg om med `./scripts/update.sh`. Bygget paketerar listan som en serverprofil för CS2. **Bottar → Botnamn** visar namn och roller. Sniperprofilen föredrar AWP och SSG 08. Riflebottar får sina vanliga gevärspreferenser och tappar snipergevär de plockar upp. Pistol-DM behåller sina vapenregler.
+   ```sh
+   python3 cs2-admin.py
+   ```
 
-`!bot_roster 20` förhandsvisar hur roller och namn kan fördelas. Påfyllningen tar hänsyn till alla aktiva bottar och använder ett oanvänt namn med den roll som krävs för en sniper per fem bottar totalt. Skriv ett befintligt namn per rad i [config/bot-priority.txt](config/bot-priority.txt) för att ge det förtur inom sin roll. Om rätt roll saknas, eller CS2 inte skapar botten med det begärda namnet, stannar påfyllningen.
+   On Windows, you can use `py cs2-admin.py`. Enter local port `27016` and the value of `CS2_RCONPW`, then select **Check connection**.
 
-Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga listan med syntax, beskrivning och adminmarkering.
+The panel can change maps, add Workshop maps by URL or ID, pause and resume the match, end warmup, restart a match, change modes, manage bots, list or kick players, and send announcements. The **Console** tab runs other CS2 server commands and shows their output. Use SSH on the host for Docker operations such as starting a stopped container or rebuilding the image.
 
-| Kommando | Vem | Beteende |
+## Migrate existing server data
+
+1. Back up the old Compose settings and the existing server directory, previously `/home/r0p3/data/gameservers/cs2-data`. Record custom cfg files, plugins, and startup scripts.
+2. Stop the old server. Check that `data/server` is empty, then run `rsync -a /home/r0p3/data/gameservers/cs2-data/ data/server/` with permissions to read the source and preserve ownership.
+3. Verify the copy and check that UID 1000 has write access. The image supplies its own `pre.sh`. Port any custom behavior you still need. The base image regenerates `server.cfg` at startup.
+4. Run `./scripts/update.sh`. Compose derives the container name from the project name. Assign different host ports if both installations will run at once.
+5. Verify connections, maps, and the plugin. Keep the source directory and backup until the new server has been tested.
+
+## In-game commands
+
+Type `!` by itself or use `!menu` after spawning. A panel appears near the top left and holds your player still while it is open. Move with **W/S**, select with **E**, and go back or close with **R**. The panel uses a separate game entity so the warmup timer can stay visible.
+
+Everyone can see server status. Admins also have menus for maps, game modes, match controls, and bots. The **Bots** menu lets you choose a team and set the target count before starting a fill. Some map options are also available to all players.
+
+The server shows a command summary when you join. Run `!help` for syntax, descriptions, and admin requirements.
+
+| Command | Access | Behavior |
 | --- | --- | --- |
-| `!` eller `!menu` | Alla | Öppna menyn i spelet |
-| `!help`, `!maps`, `!modes`, `!status` | Alla | Visa kommandon, tillåtna kartor, spellägen eller serverstatus |
-| `!map <namn>` | Alla för Workshop, admin för standardkartor | Byt karta efter namn |
-| `!add_map <workshoplänk> [namn]` | Alla | Spara en Workshop-karta i kartmenyn |
-| `!change-mode bot-dm` eller `!mode bot-dm` | Admin | Spara läget och starta om servern |
-| `!mode bot-game t` | Admin | Spela som T mot CT-bots |
-| `!live` | Admin | Avsluta uppvärmningen i bot-game |
-| `!ready`, `!unready`, `!readystatus` | Alla | Markera dig som redo på resultattavlan, ta bort markeringen eller visa status i chatten |
-| `!restart` eller `!omstart` | Admin | Starta om matchen |
-| `!pause`, `!unpause` | Admin | Begär matchpaus eller återuppta matchen |
-| `!kick_bot` | Admin | Ta bort alla bots och stäng av automatisk botpåfyllning på aktuell karta |
-| `!bot_add_t [antal]`, `!bot_add_ct [antal]` | Admin | Lägg till så många bottar på valt lag som får plats. Utan antal läggs en till. `!add_bot_t` och `!add_bot_ct` fungerar också. |
-| `!set_bot_t <antal>`, `!set_bot_ct <antal>` | Admin | Fyll på valt lag med bots upp till antalet du anger, så långt platserna räcker |
-| `!bot_roster <antal>` | Alla | Förhandsvisa namn och roller för valt antal bottar |
+| `!` or `!menu` | Everyone | Open the in-game menu |
+| `!help`, `!maps`, `!modes`, `!status` | Everyone | Show commands, maps, game modes, or server status |
+| `!map <name>` | Everyone for Workshop maps, admins for standard maps | Change to a map by name |
+| `!add_map <workshop_url> [name]` | Everyone | Save a Workshop map to the catalog |
+| `!change-mode bot-dm` or `!mode bot-dm` | Admin | Save the mode and restart the server |
+| `!mode bot-game t` | Admin | Play on T against CT bots |
+| `!live` | Admin | End warmup in competitive modes |
+| `!16_0` | Admin | Start or stop the CT 16–0 challenge on the current map |
+| `!ready`, `!unready`, `!readystatus` | Everyone | Set or clear your ready marker or show readiness in chat |
+| `!restart` | Admin | Restart the match |
+| `!pause`, `!unpause` | Admin | Request a match pause or resume the match |
+| `!kick_bot` | Admin | Remove all bots and disable automatic fill on the current map |
+| `!bot_add_t [count]`, `!bot_add_ct [count]` | Admin | Add bots up to capacity. Defaults to one. `!add_bot_t` and `!add_bot_ct` also work. |
+| `!set_bot_t <count>`, `!set_bot_ct <count>` | Admin | Fill the chosen team up to the requested count as space allows |
+| `!bot_roster <count>` | Everyone | Preview names and roles for a given bot count |
 
-Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
+Console equivalents use the `css_` prefix, such as `css_status`. The server console has admin access.
 
-RepServer lägger automatiskt till 10 bottar från listan när en spelare har valt T eller CT och minst fem sekunder har gått sedan senaste spelaranslutningen. I vanliga `bot-game` går bottarna till T. Botkommandona väntar medan en spelare ansluter. Kör `!kick_bot` för att avbryta och tömma bottarna på kartan eller `!set_bot_t 20` för att höja målet på T. Standard är 25 platser totalt, med plats för fyra spelare, 20 bottar och en reservplats så långt kartan och spelmotorn tillåter.
+Bind commands in the CS2 client console, for example `bind "F8" "say !restart"` or `bind "F9" "say !ready"`. Use the same command spelling as in chat. Admin commands still require in-game admin access.
 
-`!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
+Edit [config/bot-names.txt](config/bot-names.txt) to change the built-in roster. Use one `Name | rifle` or `Name | sniper` per line, with names up to 31 UTF-8 bytes. Run `./scripts/update.sh` to build the roster into the server's bot profile. You can inspect the names and roles under **Bots → Bot names**. Snipers prefer the AWP and SSG 08. Rifle bots keep their normal weapon preferences and drop sniper rifles they pick up. Pistol DM uses its own weapon rules.
 
-## Spellägen
+Set priority in [config/bot-priority.txt](config/bot-priority.txt) by listing existing names, one per line. A fill aims for one sniper per five bots across all active bots while prioritizing configured names within their role. The fill stops if no name is available for the required role or CS2 fails to add the requested bot.
 
-`bot-game` använder era matchregler och placerar bots på T. Välj `!mode bot-game t` för att spela på T-sidan mot CT-bots. I båda matchvarianterna får spelare och bottar ett defuse kit när de spawnar. CS2:s bombregler låter CT desarmera bomben.
+RepServer adds 10 roster bots after a human joins T or CT and five seconds have passed since the last connection. In `bot-game`, the bots join T. Bot commands wait while a player connects. Use `!kick_bot` to cancel and clear the roster or `!set_bot_t 20` to raise the target on T. The default 25 slots accommodate four players, 20 bots, and one reserved slot where the map and engine allow it.
 
-Under uppvärmningen skriver spelarna `!ready` eller väljer **Redo för match** i menyn. Håll **Tab** för att se `[REDO]` framför namnen på de spelare som är redo. `!unready` tar bort din markering. När alla anslutna människor, inklusive åskådare, är redo avslutas uppvärmningen och markeringarna försvinner. `!readystatus` visar samma status i chatten vid behov. Admin kan starta matchen manuellt med `!live`.
+The fill commands only add bots. A fill started by a player stops if that player disconnects. Switching maps reapplies the mode's bot rules.
 
-`bot-dm` kör FFA Deathmatch med snabb respawn. `bot-dm-pistol` använder samma grund med pistol och kniv. Profilerna ligger i [config/modes/](config/modes/README.md).
+## Game modes
 
-Vid första start används `bot-game`. Ett aktivt lägesval sparas i `data/state/mode`, så att en serveromstart fortsätter i det valda läget. Vid lägesbyte startar Docker om servern och spelarna ansluter igen. Spelarna ser aktuellt spelläge och karta i chatten vid anslutning. För att återställa grundläget manuellt, skriv `bot-game` i `data/state/mode` och kör `docker compose restart cs2`.
+`bot-game` uses competitive rules and places bots on T. Use `!mode bot-game t` to play on T against CT bots. In either competitive profile, both players and bots receive a defuse kit when they spawn. CS2's bomb rules allow CT to defuse.
 
-När en standardkarta från `config/maps.txt` laddas sparas den i `data/state/last-map`. Servern laddar den igen efter omstart, även vid lägesbyte. Efter spel på en Workshop-karta startar servern på den senast spelade standardkartan. `CS2_STARTMAP` används om den sparade kartan saknas i standardlistan. Ta bort `data/state/last-map` medan servern är stoppad om du vill använda startkartan från `.env` igen.
+During warmup, type `!ready` or choose **Match readiness → Mark me as ready**. Hold **Tab** to see `[READY]` before the names of ready players. Use `!unready` to clear your marker or `!readystatus` to see the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
 
-## Workshop-kartor
+`bot-dm` runs free-for-all Deathmatch with fast respawns. `bot-dm-pistol` uses the same rules with pistols and knives. See [the mode profiles](config/modes/README.md).
 
-Klistra in kartans Steam Workshop-länk i spelchatten. Kartans Workshop-titel blir normalt dess kommandonamn. En karta med titeln **Black Gold** får namnet `black_gold`. Lägg till ett eget namn efter länken om du vill välja kommandonamnet själv.
+Use `!16_0` as an admin during a competitive game to start the CT 16–0 challenge on the current map. The command starts a fresh match. If T wins a round or the round is drawn, the match restarts from 0–0. A 16–0 CT win completes the challenge. Use `!16_0` again to turn it off. The challenge also ends on map change.
+
+The first startup uses `bot-game`. The selected mode is saved in `data/state/mode`. Changing modes restarts CS2 under Docker, and players must reconnect. To reset the default manually, write `bot-game` to `data/state/mode` and run `docker compose restart cs2`.
+
+Loading a standard map listed in `config/maps.txt` saves it to `data/state/last-map`. The server restores that map after a restart, including after a session on a Workshop map. If the saved map is absent from the list, startup uses `CS2_STARTMAP`. To reset the saved map, remove `data/state/last-map` while the server is stopped.
+
+## Workshop maps
+
+Paste the map's Steam Workshop URL into the in-game command. RepServer normally derives the alias from the Workshop title. For example, **Black Gold** becomes `black_gold`. Add an optional alias after the URL to choose it yourself.
 
 ```text
-!add_map <Steam Workshop-länk>
-!add_map <Steam Workshop-länk> black_gold
+!add_map <steam_workshop_url>
+!add_map <steam_workshop_url> black_gold
 !map black_gold
 ```
 
-När kartan är sparad kan spelarna även välja den via **! → Byt karta**. CS2 hämtar kartan när någon väljer att spela den. Listan sparas i `data/state/workshop-maps.json` och finns kvar vid omstart och ombyggnad. [Steamworks Workshop-API](https://partner.steamgames.com/doc/webapi/ISteamRemoteStorage#GetPublishedFileDetails)
+Once saved, the map is available under **! → Change map** and in the desktop panel. CS2 downloads it when someone chooses to play it. The catalog lives in `data/state/workshop-maps.json` and survives restarts and rebuilds. [Steamworks Workshop API](https://partner.steamgames.com/doc/webapi/ISteamRemoteStorage#GetPublishedFileDetails)
 
-## Uppdatera
+## Updates
 
 ```bash
 git pull --ff-only
 ./scripts/update.sh
 ```
 
-Skriptet validerar Compose, bygger imagen före omstarten och återskapar containern. Pluginet, uppstartsskriptet och lägesprofilerna byggs in tillsammans. Efter en uppdatering av projektfilerna behöver du bygga om imagen. Data och lokalt tillstånd ligger kvar i `data/`. SteamCMD uppdaterar spelet under uppstart. Följ loggen och kontrollera pluginet efter uppdatering. Gör en backup av `data/state` och `.env` innan du uppdaterar en server du behöver kunna återställa.
+The script validates Compose, builds the image, and recreates the container with the new plugin, startup script, and game mode profiles. Data and state remain in `data/`. SteamCMD updates CS2 during startup. Watch the logs and verify the plugin loaded. Back up `data/state` and `.env` before updating a server you need to restore.
 
-CounterStrikeSharp och Metamod har fasta releaseversioner i Dockerfile. Basimagen använder en flytande tagg tills en image har provkörts. Sätt `CS2_BASE_IMAGE` till den verifierade digesten i `.env` när du har den. SteamCMD hanterar spelbuilden separat.
-
-Röstning och automatiserad backup återstår enligt [planen](PLAN.md).
+CounterStrikeSharp and Metamod versions are pinned in the Dockerfile. The base image uses a floating tag by default. Set `CS2_BASE_IMAGE` to a tested image digest in `.env` to pin that image.

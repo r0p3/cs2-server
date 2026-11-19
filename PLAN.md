@@ -1,151 +1,89 @@
-# Plan för CS2-servern
+# CS2 server plan
 
-Plan framtagen 2026-11-17. Detta är ett genomförandeförslag; serverkonfigurationen är ännu inte ändrad.
+Original design dated 2026-11-17. This is a historical proposal. See [README.md](README.md) for the current setup and commands.
 
-## Mål och utgångspunkt
+## Goals and starting point
 
-En privat server där spelare kan välja karta och botläge från chatten, med kontrollerade behörigheter. Kod, konfiguration och versionsval ska gå att uppdatera med Git. Beständig driftdata ska ligga under projektmappen och överleva att containern återskapas.
+Run a private server where players can choose maps and bot modes from chat under controlled permissions. Keep code, configuration, and version choices in Git. Store persistent server data under the project directory so it survives container recreation.
 
-Nuvarande `docker-compose.yml` använder `joedwards32/cs2` och lagrar serverfiler i `/home/r0p3/data/gameservers/cs2-data`. Den innehåller en inklistrad nano-rubrik före YAML, hemligheter i klartext, en äldre utkommenterad konfiguration och botkvot 20 med maxplayers 10. Aktiv tjänst saknar restart-policy. Git-metadata är inte åtkomlig som ett fungerande repository i denna arbetsmiljö; historik och remote har därför inte granskats.
+The original Compose setup used `joedwards32/cs2` and stored server files at `/home/r0p3/data/gameservers/cs2-data`. It contained a pasted editor header, plaintext secrets, obsolete commented configuration, a bot quota of 20 with 10 slots, and no restart policy. Git history and the remote were unavailable for the original review.
 
-## Teknikval
+## Stack
 
-- Behåll befintlig containerbas inledningsvis, men lås den till testad image-digest.
-- Använd Metamod:Source 2.x och CounterStrikeSharp med medföljande .NET-runtime.
-- Skapa ett litet eget C#-plugin, `RepServer`, för kommandon, lägesbyten, röstning och tillstånd. Undvik flera plugins som samtidigt styr vapen, kartor och matchflöde.
-- Lås kompatibla versioner av Metamod, CounterStrikeSharp, SDK och pluginberoenden med checksummor och låsfil. Välj exakta versioner vid implementation och verifiera dem mot aktuell CS2-build.
+- Start with the existing base image and pin it to a digest once tested.
+- Use Metamod:Source 2.x and CounterStrikeSharp with the bundled .NET runtime.
+- Use one small C# plugin, RepServer, for commands, mode changes, voting, and state. Keep map, weapon, and match rules under one owner.
+- Pin compatible versions of Metamod, CounterStrikeSharp, the SDK, and plugin dependencies with checksums or lock files. Verify them against the current CS2 build. [CounterStrikeSharp installation guide](https://docs.cssharp.dev/docs/guides/getting-started) · [Metamod](https://www.sourcemm.net/)
 
-CounterStrikeSharps installationsguide beskriver kombinationen med Metamod 2.x. Det är den stack jag rekommenderar här i stället för att bygga på äldre SourceMod/SourcePawn-plugins. [Installationsguide](https://docs.cssharp.dev/docs/guides/getting-started), [Metamods information om Source 2-grenen](https://www.sourcemm.net/).
+## Player commands and voting
 
-## Spelarkommandon
+The original proposal gave everyone access to status and votes for approved maps and modes. SteamID64 admins could apply changes directly. With one human present, that player's vote could pass immediately. Bots would have no vote.
 
-Föreslagen policy: alla spelare får läsa status och starta omröstningar om godkända kartor/lägen. Administratörer identifieras med SteamID64 och kan verkställa direkt. På en server med bara en mänsklig spelare kan samma röstningsflöde godkännas direkt. Bots deltar inte.
-
-| Kommando | Beteende | Behörighet |
+| Proposed command | Behavior | Access |
 | --- | --- | --- |
-| `!help` | Visa kommandon och hur röstning fungerar | Alla |
-| `!status` | Visa läge, karta, bots och pågående åtgärd | Alla |
-| `!maps` | Lista tillgängliga kartor | Alla |
-| `!modes` | Lista de tre lägena | Alla |
-| `!map de_mirage` | Byt till godkänd karta | Omröstning/admin |
-| `!change-mode bot-dm-pistol` | Byt läge och ladda om kartan vid behov | Omröstning/admin |
-| `!mode bot-dm` | Kort alias för `!change-mode` | Omröstning/admin |
-| `!restart` / `!omstart` | Återställ matchen i aktuellt läge | Omröstning/admin |
-| `!pause` | Pausa match i `bot-game` vid tillåten rundgräns | Omröstning/admin |
-| `!unpause` | Återuppta pausad match | Omröstning/admin |
-| `!workshop add <id eller URL>` | Validera och registrera Workshop-karta | Admin |
-| `!workshop list` | Visa kartor och installationsstatus | Alla |
-| `!map <workshop-alias>` | Ladda registrerad Workshop-karta | Omröstning/admin |
-| `!yes` / `!no` | Rösta på aktuell fråga | Mänskliga spelare |
+| `!help`, `!status`, `!maps`, `!modes` | Show help, status, maps, or game modes | Everyone |
+| `!map de_mirage` | Load an approved map | Vote or admin |
+| `!change-mode bot-dm-pistol`, `!mode bot-dm` | Change mode and reload as needed | Vote or admin |
+| `!restart` | Restart the match in the current mode | Vote or admin |
+| `!pause`, `!unpause` | Pause or resume at a valid round boundary | Vote or admin |
+| `!workshop add <id_or_url>` | Validate and register a Workshop map | Admin |
+| `!workshop list` | List maps and installation status | Everyone |
+| `!map <workshop_alias>` | Load a registered Workshop map | Vote or admin |
+| `!yes`, `!no` | Vote on the active question | Human players |
 
-`restart` betyder matchomstart. Containeromstart görs via driftkommandot på värden. Pluginet behöver ingen Docker-socket eller möjlighet att köra godtyckliga shellkommandon.
+A match restart is a game command. A container restart belongs to the host. The plugin needs no Docker socket or shell execution.
 
-Röstning: enkel majoritet av de röstberättigade människorna vid start, 20 sekunders tidsgräns, en omröstning åt gången och 60 sekunders cooldown. Bestäm och testa hantering av frånkopplingar; sänk inte nämnaren mitt i en omröstning. Servern meddelar resultat och ger nedräkning före kart-/lägesbyte. Paus får en konfigurerbar maxtid så att servern inte lämnas pausad.
+Start with a simple majority of eligible humans at vote creation, a 20-second voting window, one active vote, and a 60-second cooldown. Define disconnect behavior and keep the vote threshold stable after creation. Announce outcomes and give players a countdown before map or mode changes. Give pauses a configurable time limit.
 
-Validera kartnamn mot katalog och lägen mot fast lista. Tolka Workshop-URL som numeriskt ID; skicka aldrig rå chatttext till serverkonsolen. Logga vem som initierade administrativa ändringar och resultatet.
+Validate map names against the catalog and modes against a fixed list. Extract a numeric ID from Workshop URLs before building a server command. Log who initiated an admin change and its result.
 
-## Spellägen
+## Game modes
 
-Antagande: `bot-game` betyder rundbaserad competitive-liknande träning med bots som fyller lediga platser. Mänskliga spelare får välja lag. Ett särskilt människor-mot-bots-läge kan läggas till senare.
-
-| Läge | Regler |
+| Mode | Proposed rules |
 | --- | --- |
-| `bot-dm-pistol` | FFA deathmatch, snabb respawn, pistoler och kniv, inga granater eller primärvapen; bots följer samma vapenregler |
-| `bot-dm` | FFA deathmatch, snabb respawn, konfigurerbar vapenpool och bots som fyller upp servern |
-| `bot-game` | Lagbaserat bombscenario, ekonomi och rundor, ingen respawn mitt i rundan, paus/unpause |
+| `bot-dm-pistol` | Free-for-all, fast respawn, pistols and knives. Apply the rules to bots too. |
+| `bot-dm` | Free-for-all, fast respawn, configurable weapon pool and bots to fill slots. |
+| `bot-game` | Team bomb scenario with economy, rounds, no mid-round respawn, and pause support. |
 
-Första standard: 10 spelplatser, botnivå 3, fill till totalt 10 deltagare när kartan tillåter det. Pistol-DM börjar med lagets standardpistol och valbar pistol via meny. Paus i DM avvisas med begripligt svar i första versionen.
+The initial target was 10 slots with Expert bots, filling to capacity as the map allows. Human players could pick a side. Pistol DM would start with the team default pistol and offer a pistol menu. The first version would reject pause requests in DM with a clear reply.
 
-Varje läge får en explicit konfigurationsprofil. Ett gemensamt baslager återställer bland annat ekonomi, respawn, friendly fire, vapenregler, rundtid och botinställningar så att gamla värden inte läcker mellan lägen. Pistolbegränsning måste även täcka spawn, köp, upplockning, bonusvapen och bots; enbart en bot-cvar räcker inte.
+Configure each mode explicitly. Reset economy, respawns, friendly fire, weapon rules, round time, and bot settings between modes. Cover spawns, buys, pickups, bonus weapons, and bots when enforcing pistol restrictions.
 
-Lägesbytet är en kontrollerad operation: validera → lås andra byten → meddela → spara önskat läge → sätt speltyp/läge → kartomladdning → applicera profil efter motorns standardkonfiguration → verifiera → spara aktivt läge. Verifiera exakt ordning mot aktuell CS2-build. Om byte av speltyp kräver processomstart ska det vara en uttrycklig, testad fallback och meddela spelarna att återanslutning kan behövas.
+Validate and serialize mode changes, announce the change, save the requested mode, apply the game type, reload the map, apply the profile after the engine defaults, and verify the result. Test the order against CS2. If changing game type requires a process restart, announce that players will need to reconnect.
 
 ## Workshop
 
-Separera att lägga till en karta från att byta till den. Spara ID, alias, namn och status i beständig lokal katalog. Kontrollera att objektet är en tillgänglig CS2-karta; collections hanteras separat eller avvisas i första versionen.
+Keep map registration separate from switching maps. Save the ID, alias, title, and status in a persistent local catalog. Validate that the item is an available CS2 map. Handle collections separately.
 
-Utred och provkör aktuell servers Workshop-kommandon i första tekniska etappen innan automatisk förhämtning utlovas. Första laddningen kan behöva hämta kartan. Visa status, använd timeout och återgå till känd fungerande standardkarta vid fel. Märk kartor som redo först efter lyckad laddning. Kontrollera att bots kan navigera på testkartan; alla Workshop-kartor fungerar inte bra med bots.
+Test the server's Workshop commands before implementing prefetch. First load may need a download. Show status, set a timeout, and fall back to a known working map on failure. Mark a map ready after a successful load. Test bot navigation on Workshop maps. [Container documentation](https://github.com/joedwards32/CS2#steam-workshop)
 
-Containerns upstream beskriver Workshop-stödet som experimentellt. [Containerdokumentation](https://github.com/joedwards32/CS2#steam-workshop).
+## Persistent storage and migration
 
-## Struktur och beständig data
+Mount `./data/server` at `/home/steam/cs2-dedicated` and `data/state` at the plugin's state path. Track the base map catalog, game profiles, and permission examples in Git. Keep secrets, game files, logs, downloads, and runtime data in ignored local paths. Updates must preserve admin IDs, Workshop additions, and the saved mode. Use stable IDs when combining map catalogs.
 
-```text
-docker-compose.yml
-Dockerfile                      # bygg plugin och paketera låsta beroenden
-.env.example                    # enbart platshållare
-.gitignore
-README.md
-versions.lock.json
-config/
-  server.cfg
-  modes/                        # basprofil och tre lägesprofiler
-  maps.json                     # versionshanterad grundlista
-  permissions.example.json
-src/RepServer/
-tests/
-scripts/
-  pre.sh                        # synkronisera hanterade filer efter speluppdatering
-  update.sh
-  backup.sh
-  restore.sh
-docs/
-  operations.md
-.env                            # lokal, ignorerad av Git
-data/                           # lokal, ignorerad av Git
-  server/                       # CS2-filer, Workshop-cache och spelloggar
-  state/                        # aktivt läge, dynamisk kartlista, admins, auditlogg
-backups/                        # lokala snapshots, ignorerade av Git
-```
+Check available disk space, make a backup, stop the old service, copy the data with ownership preserved, verify the copy, switch the mounts, and test startup. Keep the original until recovery has been verified. Identify the container UID/GID and grant only the required permissions. Store backups on a separate disk or host and test restoring to a separate directory.
 
-Byt bind mount till `./data/server:/home/steam/cs2-dedicated`. Montera även `data/state` på en uttrycklig sökväg för pluginets data. Versionshanterade standarder och lokalt tillstånd har olika ägare: uppdatering får inte skriva över admins, dynamiskt tillagda kartor eller sparat läge. Definiera sammanslagning av grundkartlista och lokala tillägg via stabilt ID.
+## Startup and updates
 
-Git innehåller återbyggbar kod, konfiguration och versionsval. Spelfiler, loggar, hemligheter, nedladdade kartor och runtime-data ligger på disk under repot men committas inte. Backup ska dessutom kopieras till en annan disk eller värd; en lokal mapp skyddar inte mot diskhaveri.
+Build the plugin and package pinned mods in an image stage outside the server mount. After SteamCMD runs, the startup hook installs the managed files and updates `gameinfo.gi` without adding duplicate Metamod entries. Preserve local data and fail startup if required installation fails.
 
-Migrering: inventera befintliga filer och diskutrymme → gör backup → stoppa tjänsten → kopiera befintlig datakatalog med bevarade rättigheter till `data/server` → verifiera kopian → byt mount → starta och testa. Behåll originalkatalogen tills återställning har verifierats. Fastställ uid/gid för vald image och skrivbehörigheter utan `chmod 777`.
+The proposed update sequence was:
 
-## Uppstart och uppdatering
+1. Lock against concurrent updates. Validate configuration without printing secrets and check free space.
+2. Fetch the pinned base image and build before stopping the running server.
+3. Notify players, stop cleanly, back up state and configuration, and retain the previous image and versions.
+4. Recreate the service with `docker compose up -d --force-recreate cs2`.
+5. Allow enough time for SteamCMD and Workshop, then verify the server and plugin respond and report the result.
+6. Keep logs and backups on failure. Provide a documented recovery route and avoid restart loops after incompatible releases.
 
-Föreslagen egen image bygger pluginet i ett separat byggsteg och innehåller versionslåsta modpaket utanför den monterade serverkatalogen. Ett uppstartsskript kopierar bara hanterade filer därifrån till servern och tar bort tidigare hanterade pluginfiler som inte längre ingår. Det får inte rensa användardata.
+Compose recreation applies environment changes and keeps the data mounts. SteamCMD still updates the game at startup, so pinning the mods and image does not pin the game build. Rolling back an image or plugin is possible. Steam may no longer provide a compatible older game build. [Docker Compose restart](https://docs.docker.com/reference/cli/docker/compose/restart/) · [Docker Compose up](https://docs.docker.com/reference/cli/docker/compose/up/) · [Upstream image](https://github.com/joedwards32/CS2#how-to-use-this-image)
 
-Verifiera upstream-entrypointens ordning: SteamCMD-uppdatering först, därefter installation/synkronisering av mods och konfiguration, sedan spelstart. Använd upstream `pre.sh` om ordningen och felhanteringen passar, annars en dokumenterad wrapper. Metamod-raden i `gameinfo.gi` ska kontrolleras och läggas till idempotent efter varje speluppdatering. Säkerställ att fel i installationen stoppar starten och inte lämnar en server som tyst saknar pluginet.
+## Operations and acceptance
 
-Målet för vardagsdrift efter implementation:
+- Keep tokens and passwords in the ignored `.env`, rotate exposed values, and document precedence among Compose, game cfg, mode profiles, and saved state.
+- Use a restart policy, a graceful stop period, and log rotation. A health check should allow for long startup. Docker's unhealthy status alone does not restart the container.
+- Expose only required ports. Limit RCON to a trusted route and open SourceTV only if used.
+- Back up local state, admin IDs, secrets, and custom files. Set retention and test recovery. Game files and the Workshop cache can usually be downloaded again.
+- Validate Compose with test settings, build the plugin, and test permissions, input validation, voting, and state transitions in CI. Confirm live behavior in CS2.
 
-```bash
-git pull --ff-only
-./scripts/update.sh
-```
-
-`update.sh` ska:
-
-1. Låsa mot parallella uppdateringar, validera miljö/konfiguration utan att skriva ut hemligheter och kontrollera diskutrymme.
-2. Hämta den låsta basimagen och bygga plugin/ny image innan servern stoppas. Avbryt vid byggfel.
-3. Meddela anslutna spelare, stoppa kontrollerat och ta konsekvent backup av tillstånd och konfiguration. Bevara föregående image och versionsmanifest.
-4. Köra motsvarigheten till `docker compose up -d --force-recreate cs2` med den nybyggda imagen. Vanligt `up` utan recreate räcker inte alltid för ändrade bind-monterade filer.
-5. Vänta med generös timeout för SteamCMD/Workshop och verifiera både serverrespons och pluginets version/status. Skriv ut tydligt resultat och felsökningskommando.
-6. Vid fel: behåll loggar och backup, rapportera felet och erbjud dokumenterad återställning. Undvik automatisk omstartsloop vid inkompatibel speluppdatering.
-
-`docker compose restart` applicerar inte ändrade miljövariabler eller Compose-inställningar. `up` kan återskapa containern med bibehållna mounts. [Docker restart](https://docs.docker.com/reference/cli/docker/compose/restart/), [Docker up](https://docs.docker.com/reference/cli/docker/compose/up/).
-
-Containern uppdaterar enligt upstream spelet vid start. Låsning av mods och image gör därför inte själva Steam-builden reproducerbar. Uppdatering betyder senaste repo-valda, testade modversioner och den CS2-version Steam tillhandahåller; inte godtyckligt senaste plugin vid varje boot. Rollback av plugin/image är möjlig, men en äldre CS2-build kan inte garanteras vara tillgänglig eller kompatibel. [Upstream](https://github.com/joedwards32/CS2#how-to-use-this-image).
-
-## Driftkvalitet
-
-- Flytta tokens och lösenord till ignorerad `.env`. Byt värden som har delats eller checkats in; granska Git-historik när den är åtkomlig. Skriv inte ut värdena i loggar eller dokumentation.
-- Rensa nano-rubriken och gamla konfigurationsblock, välj en konfigurationskälla per inställning och dokumentera prioriteten mellan Compose, motorns cfg-filer, lägesprofiler och sparat tillstånd.
-- Lägg till `restart: unless-stopped`, rimlig stopptid och roterande Docker-/pluginloggar. Healthcheck ska skilja lång uppstart från fel; Docker-statusen unhealthy startar inte automatiskt om en container.
-- Exponera bara använda portar. Aktivera SourceTV-port när SourceTV används. Begränsa RCON-åtkomst i värdens nätverksregler efter behov.
-- Ta backup av lokalt tillstånd, admins, hemligheter och egna filer med begränsade filrättigheter. Spelfiler och Workshop-cache är återhämtningsbara och behöver normalt inte ingå i varje backup. Sätt retention och prova återställning till separat datakatalog.
-- CI: bygg plugin, kontrollera Compose med testvärden, validera JSON/lägesprofiler och kör tester för behörigheter, inmatningsvalidering, röstning och tillståndsövergångar. Komplettera med verkliga speltester; CI ensam bevisar inte CS2-kompatibilitet.
-
-## Genomförandeordning och acceptans
-
-1. **Grund och migrering:** rensa Compose, separera hemligheter, skapa repo-struktur och migrerings-/backupinstruktioner. Klart när ombyggd container återanvänder data och originalet kan återställas.
-2. **Teknisk prototyp:** installera låst Metamod/CounterStrikeSharp, ladda minimalt plugin och verifiera `meta list`, kommandon, lägesbyten, paus och Workshop på den aktuella spelbuilden. Dokumentera vilka API:er/cvars som faktiskt fungerar innan funktionerna byggs färdigt.
-3. **Tre spellägen:** implementera profiler, botantal, pistolregler och sparat läge. Klart när alla sex riktade byten mellan olika lägen fungerar utan kvarhängande inställningar, även efter kartbyte och containeromstart.
-4. **Spelarverktyg:** lägg till hjälp, kartval, omstart, paus/unpause, behörigheter och röstning. Klart när obehöriga inte kan kringgå röstning och samtidiga kommandon hanteras förutsägbart.
-5. **Workshop och tillstånd:** lägg till registrering via ID/URL, katalog, status, timeout och fallback. Testa ogiltigt ID, otillgänglig karta, lång nedladdning och återstart efter tillägg.
-6. **Leveransflöde:** färdigställ update/backup/restore, CI och README. Klart när `git pull --ff-only` följt av `./scripts/update.sh` tar in en ändrad konfiguration och pluginversion, behåller lokala data och ger verifierbart hälsobesked.
-
-Ingen del kräver webbpanel, extern databas eller fler driftstjänster i första versionen. Nästa praktiska steg är etapp 1–2; prototypen avgör detaljer som beror på aktuell CS2-build.
+The proposed delivery order was migration, a live compatibility prototype, mode profiles, player controls, Workshop state, then update and backup automation. Acceptance includes verifying all mode transitions, rejecting unauthorized actions, handling invalid or unavailable Workshop maps, and keeping persistent data across updates. Voting and automated backup remain future work.

@@ -6,7 +6,7 @@ namespace RepServer;
 
 public sealed partial class RepServerPlugin
 {
-    private const string ReadyPrefix = "[REDO] ";
+    private const string ReadyPrefix = "[READY] ";
     private const int PlayerNameMaxBytes = 127;
     private sealed record ReadyPlayer(int UserId, string OriginalName, string MarkedName);
 
@@ -80,19 +80,19 @@ public sealed partial class RepServerPlugin
     {
         if (player is null || !IsHuman(player) || player.UserId is not int userId)
         {
-            reply("[RepServer] Ready-kommandot används av spelare i spelet.");
+            reply("[RepServer] Use !ready in the game chat.");
             return;
         }
 
         if (!IsReadinessWarmup())
         {
-            reply("[RepServer] Uppvärmningen pågår inte.");
+            reply("[RepServer] Warmup is not active.");
             return;
         }
 
         if (ready == IsReady(player))
         {
-            reply(ready ? "[RepServer] Du är redan redo." : "[RepServer] Du är redan markerad som ej redo.");
+            reply(ready ? "[RepServer] You are already ready." : "[RepServer] You are already marked as not ready.");
             return;
         }
 
@@ -109,8 +109,8 @@ public sealed partial class RepServerPlugin
         }
 
         reply(ready
-            ? "[RepServer] Du är redo. Håll Tab för att se vilka som är redo."
-            : "[RepServer] Din redo-markering har tagits bort.");
+            ? "[RepServer] You are ready. Hold Tab to see who is ready."
+            : "[RepServer] You are no longer marked as ready.");
         QueueReadyCheck();
     }
 
@@ -118,7 +118,7 @@ public sealed partial class RepServerPlugin
     {
         if (!IsReadinessWarmup())
         {
-            reply("[RepServer] Uppvärmningen pågår inte.");
+            reply("[RepServer] Warmup is not active.");
             return;
         }
 
@@ -131,13 +131,13 @@ public sealed partial class RepServerPlugin
         var ready = humans.Where(IsReady).Select(player => readyPlayers[player.Slot].OriginalName).ToArray();
         var waiting = humans.Where(player => !IsReady(player)).Select(player => player.PlayerName).ToArray();
 
-        reply($"[RepServer] {ready.Length}/{humans.Length} redo.");
+        reply($"[RepServer] {ready.Length}/{humans.Length} ready.");
         foreach (var group in ready.Chunk(4))
-            reply("[RepServer] Redo: " + string.Join(", ", group));
+            reply("[RepServer] Ready: " + string.Join(", ", group));
         foreach (var group in waiting.Chunk(4))
-            reply("[RepServer] Väntar på: " + string.Join(", ", group));
+            reply("[RepServer] Waiting for: " + string.Join(", ", group));
         if (HasConnectingHumans())
-            reply("[RepServer] Väntar också på anslutningar.");
+            reply("[RepServer] Also waiting for players to finish connecting.");
     }
 
     private void QueueReadyCheck()
@@ -157,7 +157,7 @@ public sealed partial class RepServerPlugin
                 return;
 
             ResetReadyPlayers();
-            Server.PrintToChatAll("[RepServer] Alla är redo. Uppvärmningen avslutas.");
+            Server.PrintToChatAll("[RepServer] Everyone is ready. Ending warmup.");
             Server.ExecuteCommand("mp_warmup_end");
         });
     }

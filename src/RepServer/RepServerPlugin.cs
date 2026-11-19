@@ -3,8 +3,8 @@ using System.Text;
 using System.Text.RegularExpressions;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
-using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Cvars;
+using CounterStrikeSharp.API.Modules.Entities.Constants;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API.ValveConstants.Protobuf;
@@ -14,12 +14,15 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.13";
+    public override string ModuleVersion => "0.4.14";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
     private const string LastMapFile = "/var/lib/repserver/last-map";
     private const string Modes = "bot-game, bot-dm, bot-dm-pistol";
+    private bool IsCompetitiveMode => activeMode is "bot-game" or "bot-game-t";
+    private delegate void RepCommand(CCSPlayerController? player, string[] args, Action<string> reply);
+    private readonly Dictionary<string, RepCommand> chatCommands = new(StringComparer.OrdinalIgnoreCase);
     private const string BotTeamSettings = "bot_auto_vacate 1; mp_autoteambalance 0; mp_limitteams 0";
     private const int InitialBotCount = 10;
     private const float BotFillInterval = 1.0f;
@@ -41,6 +44,9 @@ public sealed partial class RepServerPlugin : BasePlugin
     private readonly HashSet<string> requestedBots = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> managedBotSlots = new();
     private bool loggedUnexpectedBot;
+    private Action? restoreChallengeRules;
+    private bool challengeRestartPending;
+    private CounterStrikeSharp.API.Modules.Timers.Timer? challengeRetryTimer;
     private int unexpectedBotBurst;
     private double lastUnexpectedBotAt = double.NegativeInfinity;
     private double botSpawnReadyAt;
@@ -58,7 +64,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventPlayerSpawn>((@event, _) => StripNonPistols(@event.Userid));
             RegisterEventHandler<EventItemPickup>((@event, _) => StripNonPistols(@event.Userid));
         }
-        else if (activeMode is "bot-game" or "bot-game-t")
+        else if (IsCompetitiveMode)
         {
             RegisterEventHandler<EventPlayerSpawn>((@event, _) =>
             {
@@ -100,7 +106,11 @@ public sealed partial class RepServerPlugin : BasePlugin
             ResetReadyPlayers();
             RememberMap(map);
         });
-        RegisterListener<Listeners.OnMapEnd>(ResetReadyPlayers);
+        RegisterListener<Listeners.OnMapEnd>(() =>
+        {
+            StopChallenge();
+            ResetReadyPlayers();
+        });
         RegisterListener<Listeners.OnClientConnected>(slot => connectingClients.Add(slot));
         RegisterListener<Listeners.OnClientDisconnect>(slot =>
         {
@@ -115,7 +125,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             if (botFillRequesterSlot == slot)
             {
                 CancelBotFill();
-                Console.WriteLine("[RepServer] Botpåfyllningen avbröts eftersom spelaren kopplades bort.");
+                Console.WriteLine("[RepServer] Bot fill stopped because the requesting player disconnected.");
             }
         });
         if (hotReload)
@@ -148,6 +158,8 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
 
         RegisterMenuListeners();
+        RegisterEventHandler<EventRoundEnd>((round, _) => OnChallengeRoundEnd(round));
+        RegisterEventHandler<EventCsWinPanelMatch>((_, _) => OnChallengeMatchEnd());
         RegisterEventHandler<EventPlayerConnect>((connection, info) =>
         {
             if (connection.Bot)
@@ -169,6 +181,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         }, HookMode.Pre);
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
+            if (challengeRetryTimer is null)
+                challengeRestartPending = false;
             if (readyPlayers.Count != 0)
                 IsReadinessWarmup();
             return HookResult.Continue;
@@ -176,91 +190,105 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         var commands = new List<(string Name, string Syntax, string Description, bool Admin)>();
 
-        void RegisterChatCommand(string name, string description, Action<CCSPlayerController?, CommandInfo> handler,
+        void RegisterChatCommand(string name, string description, RepCommand handler,
             bool admin = false, string arguments = "")
         {
             var syntax = arguments.Length == 0 ? $"!{name}" : $"!{name} {arguments}";
             commands.Add(($"!{name}", syntax, description, admin));
-            AddCommand($"css_{name}", description, (player, command) => handler(player, command));
+            chatCommands.Add(name, handler);
+            AddCommand($"css_{name}", description, (player, command) =>
+            {
+                var args = Enumerable.Range(1, command.ArgCount - 1).Select(command.ArgByIndex).ToArray();
+                handler(player, args, command.ReplyToCommand);
+            });
         }
 
-        RegisterChatCommand("help", "Visa alla kommandon", (_, command) =>
+        RegisterChatCommand("help", "Show all commands", (_, _, reply) =>
         {
             foreach (var entry in commands)
             {
                 var access = entry.Admin ? " (admin)" : "";
-                command.ReplyToCommand($"[RepServer] {entry.Syntax}{access} – {entry.Description}");
+                reply($"[RepServer] {entry.Syntax}{access} – {entry.Description}");
             }
         });
-        RegisterChatCommand("menu", "Öppna RepServer-menyn", (player, command) =>
+        RegisterChatCommand("menu", "Open the RepServer menu", (player, _, reply) =>
         {
             if (player is { IsValid: true, IsBot: false, IsHLTV: false })
                 QueueOpenMenu(player);
             else
-                command.ReplyToCommand("[RepServer] Öppna menyn i spelet med !.");
+                reply("[RepServer] Type ! in game to open the menu.");
         });
-        RegisterChatCommand("maps", "Visa tillåtna kartor", (player, command) =>
+        RegisterChatCommand("maps", "List available maps", (player, _, reply) =>
         {
             var choices = MapChoices(IsAdmin(player)).ToArray();
             if (choices.Length == 0)
-                command.ReplyToCommand("[RepServer] Lägg till en Workshop-karta med !add_map <workshoplänk>.");
+                reply("[RepServer] Add a Workshop map with !add_map <workshop_url>.");
             foreach (var group in choices.Chunk(6))
-                command.ReplyToCommand("[RepServer] " + string.Join(", ", group));
+                reply("[RepServer] " + string.Join(", ", group));
         });
-        RegisterChatCommand("status", "Visa pluginversion, karta och spelläge", (_, command) =>
-            command.ReplyToCommand($"[RepServer] v{ModuleVersion} | karta: {Server.MapName} | läge: {ModeLabel(activeMode)}"));
-        RegisterChatCommand("modes", "Visa spellägen", (_, command) =>
-            command.ReplyToCommand($"[RepServer] {Modes}. Använd bot-game t för att spela som T."));
-        RegisterChatCommand("ready", "Markera dig som redo under uppvärmningen", (player, command) =>
-            SetReady(player, command.ReplyToCommand, true));
-        RegisterChatCommand("unready", "Ta tillbaka din ready-markering", (player, command) =>
-            SetReady(player, command.ReplyToCommand, false));
-        RegisterChatCommand("readystatus", "Visa vilka spelare som är redo", (_, command) =>
-            ShowReadyStatus(command.ReplyToCommand));
-        RegisterChatCommand("change-mode", "Byt spelläge", ChangeMode, admin: true, arguments: "<läge>");
-        RegisterChatCommand("mode", "Kortform av !change-mode", ChangeMode, admin: true, arguments: "<läge>");
-        RegisterChatCommand("map", "Byt karta (standardkartor kräver admin)", ChangeMap, arguments: "<namn>");
-        RegisterChatCommand("add_map", "Spara en Workshop-karta med valfritt eget namn",
-            (player, command) => AddWorkshopMap(player, command.ArgString, command.ReplyToCommand),
-            arguments: "<workshoplänk> [namn]");
-        RegisterChatCommand("restart", "Starta om matchen", (player, command) =>
-            RunMatchCommand(player, command.ReplyToCommand, "mp_restartgame 1", "Startar om matchen."), admin: true);
-        RegisterChatCommand("omstart", "Samma som !restart", (player, command) =>
-            RunMatchCommand(player, command.ReplyToCommand, "mp_restartgame 1", "Startar om matchen."), admin: true);
-        RegisterChatCommand("pause", "Pausa matchen", (player, command) =>
-            RunMatchCommand(player, command.ReplyToCommand, "mp_pause_match", "Begär matchpaus."), admin: true);
-        RegisterChatCommand("unpause", "Återuppta matchen", (player, command) =>
-            RunMatchCommand(player, command.ReplyToCommand, "mp_unpause_match", "Begär att matchen återupptas."), admin: true);
-        RegisterChatCommand("kick_bot", "Ta bort alla bots och stäng av påfyllning", (player, command) => KickBots(player, command.ReplyToCommand), admin: true);
-        RegisterChatCommand("bot_add_t", "Lägg till bottar på T", (player, command) =>
-            AddBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "[antal]");
-        RegisterChatCommand("bot_add_ct", "Lägg till bottar på CT", (player, command) =>
-            AddBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "[antal]");
-        RegisterChatCommand("add_bot_t", "Samma som !bot_add_t", (player, command) =>
-            AddBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "[antal]");
-        RegisterChatCommand("add_bot_ct", "Samma som !bot_add_ct", (player, command) =>
-            AddBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "[antal]");
-        RegisterChatCommand("set_bot_t", "Fyll på T upp till valt antal bots", (player, command) =>
-            SetBotsFromCommand(player, command, CsTeam.Terrorist), admin: true, arguments: "<antal>");
-        RegisterChatCommand("set_bot_ct", "Fyll på CT upp till valt antal bots", (player, command) =>
-            SetBotsFromCommand(player, command, CsTeam.CounterTerrorist), admin: true, arguments: "<antal>");
-        RegisterChatCommand("bot_roster", "Förhandsvisa botlistan med en sniper per fem", (_, command) =>
+        RegisterChatCommand("status", "Show the plugin version, map and game mode", (_, _, reply) =>
+            reply($"[RepServer] v{ModuleVersion} | map: {Server.MapName} | mode: {ModeLabel(activeMode)}"));
+        RegisterChatCommand("modes", "List game modes", (_, _, reply) =>
+            reply($"[RepServer] {Modes}. Use bot-game t to play as T."));
+        RegisterChatCommand("ready", "Mark yourself ready during warmup", (player, _, reply) =>
+            SetReady(player, reply, true));
+        RegisterChatCommand("unready", "Clear your ready status", (player, _, reply) =>
+            SetReady(player, reply, false));
+        RegisterChatCommand("readystatus", "Show which players are ready", (_, _, reply) =>
+            ShowReadyStatus(reply));
+        RegisterChatCommand("change-mode", "Change game mode", ChangeMode, admin: true, arguments: "<mode>");
+        RegisterChatCommand("mode", "Alias for !change-mode", ChangeMode, admin: true, arguments: "<mode>");
+        RegisterChatCommand("map", "Change map (standard maps require admin)", ChangeMap, arguments: "<name>");
+        RegisterChatCommand("add_map", "Save a Workshop map with an optional alias",
+            (player, args, reply) => AddWorkshopMap(player, string.Join(' ', args), reply),
+            arguments: "<workshop_url> [name]");
+        RegisterChatCommand("restart", "Restart the match", (player, _, reply) =>
+            RunMatchCommand(player, reply, "mp_restartgame 1", "Restarting the match."), admin: true);
+        RegisterChatCommand("pause", "Pause the match", (player, _, reply) =>
+            RunMatchCommand(player, reply, "mp_pause_match", "Requesting a match pause."), admin: true);
+        RegisterChatCommand("unpause", "Resume the match", (player, _, reply) =>
+            RunMatchCommand(player, reply, "mp_unpause_match", "Requesting that the match resume."), admin: true);
+        RegisterChatCommand("kick_bot", "Remove all bots and disable automatic fill", (player, _, reply) => KickBots(player, reply), admin: true);
+        RegisterChatCommand("bot_add_t", "Add bots to T", (player, args, reply) =>
+            AddBotsFromCommand(player, args, reply, CsTeam.Terrorist), admin: true, arguments: "[count]");
+        RegisterChatCommand("bot_add_ct", "Add bots to CT", (player, args, reply) =>
+            AddBotsFromCommand(player, args, reply, CsTeam.CounterTerrorist), admin: true, arguments: "[count]");
+        RegisterChatCommand("add_bot_t", "Alias for !bot_add_t", (player, args, reply) =>
+            AddBotsFromCommand(player, args, reply, CsTeam.Terrorist), admin: true, arguments: "[count]");
+        RegisterChatCommand("add_bot_ct", "Alias for !bot_add_ct", (player, args, reply) =>
+            AddBotsFromCommand(player, args, reply, CsTeam.CounterTerrorist), admin: true, arguments: "[count]");
+        RegisterChatCommand("set_bot_t", "Fill T to the specified bot count", (player, args, reply) =>
+            SetBotsFromCommand(player, args, reply, CsTeam.Terrorist), admin: true, arguments: "<count>");
+        RegisterChatCommand("set_bot_ct", "Fill CT to the specified bot count", (player, args, reply) =>
+            SetBotsFromCommand(player, args, reply, CsTeam.CounterTerrorist), admin: true, arguments: "<count>");
+        RegisterChatCommand("bot_roster", "Preview the bot roster with one sniper per five bots", (_, args, reply) =>
         {
-            if (command.ArgCount != 2 ||
-                !int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out var target) ||
+            if (args.Length != 1 ||
+                !int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out var target) ||
                 target < 1 || target > PlayerLimit)
             {
-                command.ReplyToCommand($"[RepServer] Använd !bot_roster <antal> (1–{PlayerLimit}).");
+                reply($"[RepServer] Use !bot_roster <count> (1–{PlayerLimit}).");
                 return;
             }
 
-            PreviewBotRoster(target, command.ReplyToCommand);
-        }, arguments: "<antal>");
-        RegisterChatCommand("live", "Avsluta uppvärmningen i bot-game", (player, command) => StartMatch(player, command.ReplyToCommand), admin: true);
+            PreviewBotRoster(target, reply);
+        }, arguments: "<count>");
+        RegisterChatCommand("16_0", "Start or stop the CT 16-0 challenge",
+            (player, _, reply) => ToggleChallenge(player, reply), admin: true);
+        RegisterChatCommand("live", "End warmup in competitive modes", (player, _, reply) => StartMatch(player, reply), admin: true);
+
+        AddCommand("css_workshop_result", "Check the result of a Workshop lookup started from the server console",
+            (player, command) =>
+            {
+                if (player is null)
+                    command.ReplyToCommand(command.ArgCount == 2
+                        ? WorkshopResult(command.ArgByIndex(1))
+                        : "[RepServer] Use css_workshop_result <workshop_id>.");
+            });
 
         var joinLines = commands.GroupBy(entry => entry.Admin)
             .SelectMany(group => group.Select(entry => entry.Name).Chunk(5)
-                .Select(chunk => $"[RepServer] {(group.Key ? "Admin" : "Kommandon")}: {string.Join(", ", chunk)}"))
+                .Select(chunk => $"[RepServer] {(group.Key ? "Admin" : "Commands")}: {string.Join(", ", chunk)}"))
             .ToArray();
 
         RegisterEventHandler<EventPlayerConnectFull>((@event, _) =>
@@ -274,30 +302,141 @@ public sealed partial class RepServerPlugin : BasePlugin
 
                 botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
                 ScheduleInitialFill(player);
-                player.PrintToChat($"[RepServer] Läge: {ModeLabel(activeMode)} | karta: {Server.MapName}");
-                player.PrintToChat("[RepServer] Skriv ! för att öppna menyn.");
+                player.PrintToChat($"[RepServer] Mode: {ModeLabel(activeMode)} | map: {Server.MapName}");
+                player.PrintToChat("[RepServer] Type ! to open the menu.");
                 foreach (var line in joinLines)
                     player.PrintToChat(line);
             }
 
             return HookResult.Continue;
         });
-        Console.WriteLine($"[RepServer] v{ModuleVersion} laddad | läge: {ModeLabel(activeMode)}");
+        Console.WriteLine($"[RepServer] v{ModuleVersion} loaded | mode: {ModeLabel(activeMode)}");
     }
 
     private static string ModeLabel(string mode) => mode switch
     {
-        "bot-game" => "bot-game (bots på T)",
-        "bot-game-t" => "bot-game (bots på CT)",
+        "bot-game" => "bot-game (bots on T)",
+        "bot-game-t" => "bot-game (bots on CT)",
         _ => mode
     };
 
-    private void ChangeMode(CCSPlayerController? player, CommandInfo command)
+    private void ToggleChallenge(CCSPlayerController? player, Action<string> reply)
     {
-        var requested = command.ArgCount == 2 ? command.ArgByIndex(1).ToLowerInvariant() : null;
-        if (command.ArgCount == 3 && command.ArgByIndex(1).Equals("bot-game", StringComparison.OrdinalIgnoreCase))
+        if (!CheckAdmin(player, reply))
+            return;
+        if (restoreChallengeRules is not null)
         {
-            requested = command.ArgByIndex(2).ToLowerInvariant() switch
+            StopChallenge();
+            const string message = "[RepServer] CT 16-0 challenge stopped.";
+            if (player is null)
+                reply(message);
+            Server.PrintToChatAll(message);
+            return;
+        }
+        if (!IsCompetitiveMode || pendingMode is not null || Utilities.GetGameRules() is not { } rules)
+        {
+            reply("[RepServer] The CT 16-0 challenge requires an active competitive map.");
+            return;
+        }
+
+        var maxRounds = ConVar.Find("mp_maxrounds");
+        var halftime = ConVar.Find("mp_halftime");
+        var clinch = ConVar.Find("mp_match_can_clinch");
+        if (maxRounds is null || halftime is null || clinch is null)
+        {
+            reply("[RepServer] Could not apply the CT 16-0 match rules.");
+            return;
+        }
+
+        var originalMaxRounds = maxRounds.GetPrimitiveValue<int>();
+        var originalHalftime = halftime.GetPrimitiveValue<bool>();
+        var originalClinch = clinch.GetPrimitiveValue<bool>();
+        restoreChallengeRules = () =>
+        {
+            maxRounds.SetValue(originalMaxRounds);
+            halftime.SetValue(originalHalftime);
+            clinch.SetValue(originalClinch);
+        };
+        maxRounds.SetValue(30);
+        halftime.SetValue(false);
+        clinch.SetValue(true);
+
+        var start = rules.WarmupPeriod ? "mp_warmup_end" : "mp_restartgame 1";
+        challengeRestartPending = true;
+        ResetReadyPlayers();
+        Execute(player, reply, start, "CT 16-0 challenge started. Win 16 rounds in a row as CT.");
+    }
+
+    private void StopChallenge()
+    {
+        challengeRetryTimer?.Kill();
+        challengeRetryTimer = null;
+        challengeRestartPending = false;
+        restoreChallengeRules?.Invoke();
+        restoreChallengeRules = null;
+    }
+
+    private HookResult OnChallengeRoundEnd(EventRoundEnd round)
+    {
+        var reason = (RoundEndReason)round.Reason;
+        if (restoreChallengeRules is null || Utilities.GetGameRules() is not { WarmupPeriod: false } ||
+            reason == RoundEndReason.GameCommencing)
+            return HookResult.Continue;
+
+        if (reason is RoundEndReason.CTsSurrender or RoundEndReason.TerroristsSurrender)
+            RetryChallenge("A team surrendered.");
+        else if (reason == RoundEndReason.RoundDraw)
+            RetryChallenge("The round was a draw.");
+        else if (round.Winner == (int)CsTeam.Terrorist)
+            RetryChallenge("T won a round.");
+        return HookResult.Continue;
+    }
+
+    private HookResult OnChallengeMatchEnd()
+    {
+        if (restoreChallengeRules is null || challengeRestartPending || pendingMode is not null)
+            return HookResult.Continue;
+
+        var teams = Utilities.FindAllEntitiesByDesignerName<CCSTeam>("cs_team_manager").ToArray();
+        var ct = teams.FirstOrDefault(team => team.TeamNum == (byte)CsTeam.CounterTerrorist);
+        var t = teams.FirstOrDefault(team => team.TeamNum == (byte)CsTeam.Terrorist);
+        if (ct is not null && t is not null)
+        {
+            if (ct.Score == 16 && t.Score == 0)
+            {
+                Server.PrintToChatAll("[RepServer] Challenge complete. CT won 16-0!");
+                StopChallenge();
+            }
+            else
+            {
+                RetryChallenge($"The match ended {ct.Score}-{t.Score}.");
+            }
+        }
+        return HookResult.Continue;
+    }
+
+    private void RetryChallenge(string reason)
+    {
+        if (restoreChallengeRules is null || challengeRestartPending || pendingMode is not null)
+            return;
+
+        challengeRestartPending = true;
+        const string restart = "mp_restartgame 1";
+        AnnounceCommand(null, restart, $"CT 16-0 challenge failed. {reason} Restarting in three seconds.");
+        challengeRetryTimer = AddTimer(2.0f, () =>
+        {
+            challengeRetryTimer = null;
+            if (pendingMode is null)
+                Server.ExecuteCommand(restart);
+        }, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private void ChangeMode(CCSPlayerController? player, string[] args, Action<string> reply)
+    {
+        var requested = args.Length == 1 ? args[0].ToLowerInvariant() : null;
+        if (args.Length == 2 && args[0].Equals("bot-game", StringComparison.OrdinalIgnoreCase))
+        {
+            requested = args[1].ToLowerInvariant() switch
             {
                 "t" => "bot-game-t",
                 "ct" => "bot-game",
@@ -305,7 +444,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             };
         }
 
-        SelectMode(player, command.ReplyToCommand, requested);
+        SelectMode(player, reply, requested);
     }
 
     private void SelectMode(CCSPlayerController? player, Action<string> reply, string? requested)
@@ -315,28 +454,28 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         if (requested is not ("bot-game" or "bot-game-t" or "bot-dm" or "bot-dm-pistol"))
         {
-            reply($"[RepServer] !mode <läge>. Välj {Modes}. I bot-game kan du lägga till t eller ct.");
+            reply($"[RepServer] !mode <mode>. Choose {Modes}. In bot-game, you can add t or ct.");
             return;
         }
         if (pendingMode is not null)
         {
-            reply($"[RepServer] Byte till {ModeLabel(pendingMode)} pågår redan.");
+            reply($"[RepServer] A switch to {ModeLabel(pendingMode)} is already in progress.");
             return;
         }
         if (requested == activeMode)
         {
-            reply($"[RepServer] {ModeLabel(activeMode)} är redan aktivt.");
+            reply($"[RepServer] {ModeLabel(activeMode)} is already active.");
             return;
         }
 
         if (!TrySaveState(ModeFile, requested))
         {
-            reply("[RepServer] Läget kunde inte sparas. Kontrollera data/state på servern.");
+            reply("[RepServer] Could not save the mode. Check data/state on the server.");
             return;
         }
 
         pendingMode = requested;
-        var message = $"Byter till {ModeLabel(requested)}. Servern startar om om tre sekunder. Anslut igen när den är uppe.";
+        var message = $"Switching to {ModeLabel(requested)}. The server will restart in three seconds. Reconnect when it is back online.";
         if (player is null)
             reply("[RepServer] " + message);
         Server.PrintToChatAll("[RepServer] " + message);
@@ -359,7 +498,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"[RepServer] Kunde inte spara {Path.GetFileName(path)}: {exception.GetType().Name}");
+            Console.Error.WriteLine($"[RepServer] Could not save {Path.GetFileName(path)}: {exception.GetType().Name}");
             return false;
         }
     }
@@ -374,8 +513,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         requestedBots.Clear();
         managedBotSlots.Clear();
         const string action = "bot_quota_mode normal; bot_quota 0; bot_kick";
-        Console.WriteLine("[RepServer] Tar bort alla bottar.");
-        reply("[RepServer] Tar bort alla bottar.");
+        Console.WriteLine("[RepServer] Removing all bots.");
+        reply("[RepServer] Removing all bots.");
         Server.NextWorldUpdate(() =>
         {
             Server.ExecuteCommand(action);
@@ -409,7 +548,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             managedBotSlots.Clear();
             SyncBotQuota();
             Server.ExecuteCommand("bot_quota_mode normal; bot_quota 0; bot_kick");
-            ReportBotFill("Stoppade upprepad botpåfyllning från CS2. Admin kan fylla på igen med !set_bot_t eller !set_bot_ct.");
+            ReportBotFill("Stopped repeated bot spawning by CS2. Admins can refill with !set_bot_t or !set_bot_ct.");
             return;
         }
 
@@ -419,7 +558,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         SyncBotQuota();
         if (!loggedUnexpectedBot)
         {
-            Console.Error.WriteLine($"[RepServer] Tar bort botten {bot.PlayerName} från fel lag eller utanför påfyllningen.");
+            Console.Error.WriteLine($"[RepServer] Removing {bot.PlayerName} because it spawned on the wrong team or outside a bot fill.");
             loggedUnexpectedBot = true;
         }
         bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
@@ -460,7 +599,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             if (name.Length == 0 || name.Any(c => char.IsControl(c) || c is '"' or '\\' or ';') || Encoding.UTF8.GetByteCount(name) > 31 ||
                 role is not ("rifle" or "sniper") || !seen.Add(name))
             {
-                Console.Error.WriteLine($"[RepServer] Ogiltigt eller upprepat botnamn i bot-names.txt på rad {lineNumber}.");
+                Console.Error.WriteLine($"[RepServer] Invalid or duplicate bot name in bot-names.txt on line {lineNumber}.");
                 continue;
             }
 
@@ -484,11 +623,11 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
 
         var sniperCount = roster.Count(profile => profile.Role == "sniper");
-        reply($"[RepServer] Förhandsvisning: {roster.Count} av {target} bottar, varav {sniperCount} snipers.");
+        reply($"[RepServer] Preview: {roster.Count} of {target} bots, including {sniperCount} snipers.");
         if (roster.Count < target)
         {
             var missingRole = (roster.Count + 1) % 5 == 0 ? "sniper" : "rifle";
-            reply($"[RepServer] Nästa plats kräver ett ledigt namn med rollen {missingRole}.");
+            reply($"[RepServer] The next slot requires an unused name with the {missingRole} role.");
         }
 
         foreach (var group in roster.Chunk(2))
@@ -507,7 +646,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             if (botProfiles.Any(profile => string.Equals(profile.Name, name, StringComparison.OrdinalIgnoreCase)))
                 priorityBotNames.Add(name);
             else
-                Console.Error.WriteLine($"[RepServer] Prioriterat namn saknas i bot-names.txt: {name}");
+                Console.Error.WriteLine($"[RepServer] Priority name missing from bot-names.txt: {name}");
         }
     }
 
@@ -524,26 +663,26 @@ public sealed partial class RepServerPlugin : BasePlugin
         SetBots(player, reply, team, Math.Min(current + count, PlayerLimit));
     }
 
-    private void AddBotsFromCommand(CCSPlayerController? player, CommandInfo command, CsTeam team)
+    private void AddBotsFromCommand(CCSPlayerController? player, string[] args, Action<string> reply, CsTeam team)
     {
         var count = 1;
-        if (command.ArgCount > 1 && (command.ArgCount != 2 ||
-            !int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out count) ||
+        if (args.Length > 0 && (args.Length != 1 ||
+            !int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out count) ||
             count < 1 || count > PlayerLimit))
         {
-            command.ReplyToCommand($"[RepServer] Ange ett heltal mellan 1 och {PlayerLimit}.");
+            reply($"[RepServer] Enter a whole number between 1 and {PlayerLimit}.");
             return;
         }
 
-        AddBot(player, command.ReplyToCommand, team, count);
+        AddBot(player, reply, team, count);
     }
 
-    private void SetBotsFromCommand(CCSPlayerController? player, CommandInfo command, CsTeam team)
+    private void SetBotsFromCommand(CCSPlayerController? player, string[] args, Action<string> reply, CsTeam team)
     {
-        var target = command.ArgCount == 2 &&
-            int.TryParse(command.ArgByIndex(1), NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
+        var target = args.Length == 1 &&
+            int.TryParse(args[0], NumberStyles.None, CultureInfo.InvariantCulture, out var parsed)
             ? parsed : 0;
-        SetBots(player, command.ReplyToCommand, team, target);
+        SetBots(player, reply, team, target);
     }
 
     private void SetBots(CCSPlayerController? player, Action<string> reply, CsTeam team, int target)
@@ -552,18 +691,20 @@ public sealed partial class RepServerPlugin : BasePlugin
             return;
         if (target < 1 || target > PlayerLimit)
         {
-            reply($"[RepServer] Ange ett heltal mellan 1 och {PlayerLimit}.");
+            reply($"[RepServer] Enter a whole number between 1 and {PlayerLimit}.");
             return;
         }
 
         var current = CurrentBots().Count(bot => bot.TeamNum == (byte)team);
         if (current >= target)
         {
-            reply($"[RepServer] {BotTeamLabel(team)} har redan {current} bottar.");
+            reply($"[RepServer] {BotTeamLabel(team)} already has {current} bots.");
             return;
         }
 
         autoRosterPending = false;
+        if (player is null)
+            reply($"[RepServer] Filling {BotTeamLabel(team)} to {target} bots.");
         StartBotFill(player, team, target);
     }
 
@@ -609,7 +750,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         unexpectedBotBurst = 0;
         lastUnexpectedBotAt = double.NegativeInfinity;
         var teamLabel = BotTeamLabel(team);
-        Console.WriteLine($"[RepServer] Botlista: {teamLabel}, mål {target}.");
+        Console.WriteLine($"[RepServer] Filling {teamLabel} to {target} bots.");
         botFillRequesterSlot = player?.Slot;
         // CS2 must finish the chat packet before it creates a bot.
         botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, null), TimerFlags.STOP_ON_MAPCHANGE);
@@ -655,20 +796,20 @@ public sealed partial class RepServerPlugin : BasePlugin
             {
                 var teamLimit = isT ? rules.MaxNumTerrorists : rules.MaxNumCTs;
                 var spawnCount = isT ? rules.SpawnPointCount_Terrorist : rules.SpawnPointCount_CT;
-                Console.WriteLine($"[RepServer] {Server.MapName}: {teamLabel} {teamHumans + teamCount}/{teamLimit}, {spawnCount} spawnpunkter, server {clients.Count}/{PlayerLimit} platser.");
+                Console.WriteLine($"[RepServer] {Server.MapName}: {teamLabel} {teamHumans + teamCount}/{teamLimit}, {spawnCount} spawn points, server {clients.Count}/{PlayerLimit} slots.");
             }
-            ReportBotFill($"CS2 lade inte till {expected} på {teamLabel}. {teamCount} av {target} bottar.");
+            ReportBotFill($"CS2 did not add {expected} to {teamLabel}. Added {teamCount} of {target} bots.");
             return;
         }
         if (teamCount >= target)
         {
-            ReportBotFill($"{teamLabel} har nu {teamCount} bottar från listan.");
+            ReportBotFill($"{teamLabel} now has {teamCount} bots from the roster.");
             return;
         }
         var occupiedSlots = clients.Count(client => client.IsValid && (!client.IsBot || client.IsHLTV)) + bots.Length;
         if (occupiedSlots >= PlayerLimit - ReservedPlayerSlots)
         {
-            ReportBotFill($"En plats hålls ledig. {teamLabel} har {teamCount} av {target} bottar.");
+            ReportBotFill($"One slot is reserved. {teamLabel} has {teamCount} of {target} bots.");
             return;
         }
 
@@ -676,14 +817,14 @@ public sealed partial class RepServerPlugin : BasePlugin
         var requiredSnipers = (bots.Length + 1) / 5;
         if (actualSnipers > requiredSnipers || actualSnipers + 1 < requiredSnipers)
         {
-            ReportBotFill("Den nuvarande uppställningen bryter mot sniperregeln. Kör !kick_bot och fyll på igen.");
+            ReportBotFill("The current roster does not match the sniper ratio. Run !kick_bot and fill again.");
             return;
         }
 
         var role = actualSnipers < requiredSnipers ? "sniper" : "rifle";
         if (!RandomizedBots(role, requestedBots).TryDequeue(out var profile))
         {
-            ReportBotFill($"Inget oanvänt {role}-namn kvar. {teamLabel} har {teamCount} av {target} bottar.");
+            ReportBotFill($"No unused {role} names remain. {teamLabel} has {teamCount} of {target} bots.");
             return;
         }
 
@@ -719,7 +860,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (botFillTimer is null)
             return true;
 
-        reply("[RepServer] En botpåfyllning pågår redan. !kick_bot avbryter och tar bort alla bots.");
+        reply("[RepServer] A bot fill is already running. Use !kick_bot to cancel it and remove all bots.");
         return false;
     }
 
@@ -735,14 +876,17 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (!CheckAdmin(player, reply))
             return;
 
-        if (activeMode is not ("bot-game" or "bot-game-t"))
+        if (!IsCompetitiveMode)
         {
-            reply("[RepServer] !live används i bot-game.");
+            reply("[RepServer] Use !live in a competitive mode.");
             return;
         }
 
         const string action = "mp_warmup_end";
-        AnnounceCommand(player, action, "Avslutar uppvärmningen och startar matchen.");
+        const string message = "Ending warmup and starting the match.";
+        if (player is null)
+            reply("[RepServer] " + message);
+        AnnounceCommand(player, action, message);
         Server.NextWorldUpdate(() =>
         {
             ResetReadyPlayers();
@@ -762,27 +906,27 @@ public sealed partial class RepServerPlugin : BasePlugin
         return HookResult.Continue;
     }
 
-    private void ChangeMap(CCSPlayerController? player, CommandInfo command) =>
-        SelectMap(player, command.ReplyToCommand, command.ArgCount == 2 ? command.ArgByIndex(1) : "");
+    private void ChangeMap(CCSPlayerController? player, string[] args, Action<string> reply) =>
+        SelectMap(player, reply, args.Length == 1 ? args[0] : "");
 
     private void SelectMap(CCSPlayerController? player, Action<string> reply, string map)
     {
         map = map.ToLowerInvariant();
         if (workshopMaps.TryGetValue(map, out var item))
         {
-            Execute(player, $"host_workshop_map {item.Id.ToString(CultureInfo.InvariantCulture)}",
-                $"Laddar Workshop-kartan {item.Alias}.");
+            Execute(player, reply, $"host_workshop_map {item.Id.ToString(CultureInfo.InvariantCulture)}",
+                $"Loading Workshop map {item.Alias}.");
             return;
         }
 
         if (!maps.Contains(map, StringComparer.Ordinal))
         {
-            reply("[RepServer] Ange en karta från !maps.");
+            reply("[RepServer] Choose a map from !maps.");
             return;
         }
 
         if (CheckAdmin(player, reply))
-            Execute(player, $"changelevel {map}", $"Byter karta till {map}.");
+            Execute(player, reply, $"changelevel {map}", $"Changing map to {map}.");
     }
 
     private static void RunMatchCommand(CCSPlayerController? player, Action<string> reply, string action, string message)
@@ -790,11 +934,13 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (!CheckAdmin(player, reply))
             return;
 
-        Execute(player, action, message);
+        Execute(player, reply, action, message);
     }
 
-    private static void Execute(CCSPlayerController? player, string action, string message)
+    private static void Execute(CCSPlayerController? player, Action<string> reply, string action, string message)
     {
+        if (player is null)
+            reply("[RepServer] " + message);
         AnnounceCommand(player, action, message);
         Server.ExecuteCommand(action);
     }
@@ -811,7 +957,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (IsAdmin(player))
             return true;
 
-        reply("[RepServer] Kommandot kräver adminbehörighet.");
+        reply("[RepServer] This command requires admin access.");
         return false;
     }
 
@@ -834,12 +980,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
         catch (IOException exception)
         {
-            Console.Error.WriteLine($"[RepServer] Kunde inte läsa adminlistan: {exception.GetType().Name}");
+            Console.Error.WriteLine($"[RepServer] Could not read the admin list: {exception.GetType().Name}");
             return false;
         }
         catch (UnauthorizedAccessException)
         {
-            Console.Error.WriteLine("[RepServer] Saknar läsrättighet till adminlistan.");
+            Console.Error.WriteLine("[RepServer] Permission denied while reading the admin list.");
             return false;
         }
     }

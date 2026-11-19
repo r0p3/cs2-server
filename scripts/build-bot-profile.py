@@ -71,11 +71,11 @@ def package_database(data):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        raise SystemExit("Använd: build-bot-profile.py bot-names.txt botprofile.vpk")
+        raise SystemExit("Usage: build-bot-profile.py bot-names.txt botprofile.vpk")
     try:
         profiles = list(read_profiles(Path(sys.argv[1])))
         if not profiles:
-            raise ValueError("Botlistan är tom.")
+            raise ValueError("The bot roster is empty.")
         Path(sys.argv[2]).write_bytes(package_database(build_database(profiles)))
     except (OSError, ValueError) as error:
         raise SystemExit(str(error)) from error

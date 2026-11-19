@@ -1,11 +1,11 @@
-# Ett namn per rad i formatet Namn | rifle eller Namn | sniper.
-# Byt rifle till sniper på de rader du vill ge sniperrollen.
-# Förhandsvisningen använder en sniper på var femte plats. För 20 behövs 16 rifle och 4 sniper.
+# One name per line in the form Name | rifle or Name | sniper.
+# Change rifle to sniper to assign the sniper role.
+# The preview assigns a sniper to every fifth slot. A roster of 20 needs 16 rifles and 4 snipers.
 Petter Toivonen | sniper
 Louis Litt | rifle
 Morgan Karlsson | rifle
 Ola-Conny | rifle
-Rövfett Arselberg | rifle
+Fatbottom Arselberg | rifle
 Greta Sugberg | sniper
 Le Fet | rifle
 Heckliga Hecklish | rifle
@@ -18,6 +18,6 @@ Vexdog | sniper
 r0p3 | rifle
 erk | rifle
 mark | rifle
-Tjocka Bävlingen | rifle
+Chubby Beaver | rifle
 Christian Green | rifle
-Diskvatten | rifle
+Dishwater | rifle

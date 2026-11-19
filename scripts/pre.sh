@@ -6,23 +6,23 @@ repserver_validate_env() {
     local invalid=0
 
     if [[ ! ${SRCDS_TOKEN:-} =~ ^[A-Fa-f0-9]{32}$ ]]; then
-        echo "RepServer: SRCDS_TOKEN måste bestå av exakt 32 hextecken." >&2
+        echo "RepServer: SRCDS_TOKEN must contain exactly 32 hexadecimal characters." >&2
         invalid=1
     fi
     if [[ ! ${CS2_PW:-} =~ ^[a-zA-Z0-9]{8,}$ ]]; then
-        echo "RepServer: CS2_PW måste ha minst 8 tecken, endast A-Z, a-z och 0-9." >&2
+        echo "RepServer: CS2_PW must contain at least 8 characters using A-Z, a-z and 0-9." >&2
         invalid=1
     fi
     if [[ ! ${CS2_RCONPW:-} =~ ^[a-zA-Z0-9]{16,}$ ]]; then
-        echo "RepServer: CS2_RCONPW måste ha minst 16 tecken, endast A-Z, a-z och 0-9." >&2
+        echo "RepServer: CS2_RCONPW must contain at least 16 characters using A-Z, a-z and 0-9." >&2
         invalid=1
     fi
     if [[ ! ${CS2_STARTMAP:-} =~ ^[a-z0-9_]+$ ]]; then
-        echo "RepServer: CS2_STARTMAP får endast innehålla a-z, 0-9 och understreck." >&2
+        echo "RepServer: CS2_STARTMAP may contain only a-z, 0-9 and underscores." >&2
         invalid=1
     fi
     if [[ ! ${CS2_MAXPLAYERS:-} =~ ^[1-9][0-9]?$ ]] || (( CS2_MAXPLAYERS < 2 || CS2_MAXPLAYERS > 64 )); then
-        echo "RepServer: CS2_MAXPLAYERS måste vara ett heltal mellan 2 och 64." >&2
+        echo "RepServer: CS2_MAXPLAYERS must be a whole number between 2 and 64." >&2
         invalid=1
     fi
 
@@ -64,7 +64,7 @@ repserver_install() {
 }
 
 if ! repserver_install; then
-    echo "RepServer: kunde inte installera pluginet. Kontrollera gameinfo.gi och rättigheter för data/." >&2
+    echo "RepServer: Could not install the plugin. Check gameinfo.gi and permissions on data/." >&2
     exit 1
 fi
 unset -f repserver_install
@@ -89,7 +89,7 @@ repserver_configure_mode() {
             [[ "$REPSERVER_ACTIVE_MODE" != bot-dm-pistol ]] || deathmatch=bot_dm_pistol
             ;;
         *)
-            echo "RepServer: okänt läge i data/state/mode. Startar bot-game." >&2
+            echo "RepServer: Unknown mode in data/state/mode. Starting bot-game." >&2
             REPSERVER_ACTIVE_MODE=bot-game
             CS2_GAMEALIAS=competitive
             ;;
@@ -99,7 +99,7 @@ repserver_configure_mode() {
     local profile
     for profile in bot_game bot_game_t bot_dm bot_dm_pistol; do
         if [[ ! -r "/opt/repserver/modes/$profile.cfg" ]]; then
-            echo "RepServer: imagen saknar $profile.cfg. Bygg om med ./scripts/update.sh." >&2
+            echo "RepServer: The image is missing $profile.cfg. Rebuild with ./scripts/update.sh." >&2
             return 1
         fi
         cp "/opt/repserver/modes/$profile.cfg" "$cfg_dir/repserver/" || return 1
@@ -107,7 +107,7 @@ repserver_configure_mode() {
     repserver_mode_include "$cfg_dir/gamemode_competitive_server.cfg" "$competitive" || return 1
     repserver_mode_include "$cfg_dir/gamemode_deathmatch_server.cfg" "$deathmatch" || return 1
     export REPSERVER_ACTIVE_MODE CS2_GAMEALIAS
-    echo "RepServer: startar $REPSERVER_ACTIVE_MODE ($CS2_GAMEALIAS)."
+    echo "RepServer: Starting $REPSERVER_ACTIVE_MODE ($CS2_GAMEALIAS)."
 }
 
 # Preserve existing local settings, then apply the selected profile last.
@@ -124,7 +124,7 @@ repserver_mode_include() {
 }
 
 if ! repserver_configure_mode; then
-    echo "RepServer: kunde inte installera lägesprofilerna." >&2
+    echo "RepServer: Could not install the game mode profiles." >&2
     exit 1
 fi
 unset -f repserver_configure_mode repserver_mode_include
@@ -138,12 +138,12 @@ repserver_restore_map() {
             grep -Eq "^[[:space:]]*${last_map}[[:space:]]*$" /opt/repserver/maps.txt; then
             CS2_STARTMAP="$last_map"
         else
-            echo "RepServer: data/state/last-map innehåller ingen standardkarta från config/maps.txt. Använder startkartan." >&2
+            echo "RepServer: data/state/last-map does not match a standard map in config/maps.txt. Using the startup map." >&2
         fi
     fi
 
     export CS2_STARTMAP
-    echo "RepServer: laddar kartan $CS2_STARTMAP."
+    echo "RepServer: Loading map $CS2_STARTMAP."
 }
 
 repserver_restore_map
