@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API.ValveConstants.Protobuf;
@@ -13,7 +14,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.12";
+    public override string ModuleVersion => "0.4.13";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -23,6 +24,8 @@ public sealed partial class RepServerPlugin : BasePlugin
     private const int InitialBotCount = 10;
     private const float BotFillInterval = 1.0f;
     private const float JoinGracePeriod = 5.0f;
+    private const int UnexpectedBotBurstLimit = 3;
+    private const double UnexpectedBotBurstInterval = 0.25;
     private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
     private string[] maps = [];
@@ -37,6 +40,9 @@ public sealed partial class RepServerPlugin : BasePlugin
     private readonly HashSet<int> connectingClients = new();
     private readonly HashSet<string> requestedBots = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> managedBotSlots = new();
+    private bool loggedUnexpectedBot;
+    private int unexpectedBotBurst;
+    private double lastUnexpectedBotAt = double.NegativeInfinity;
     private double botSpawnReadyAt;
 
     private static int PlayerLimit =>
@@ -86,6 +92,9 @@ public sealed partial class RepServerPlugin : BasePlugin
             botFillRequesterSlot = null;
             requestedBots.Clear();
             managedBotSlots.Clear();
+            loggedUnexpectedBot = false;
+            unexpectedBotBurst = 0;
+            lastUnexpectedBotAt = double.NegativeInfinity;
             autoRosterPending = true;
             botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
             ResetReadyPlayers();
@@ -99,7 +108,10 @@ public sealed partial class RepServerPlugin : BasePlugin
             ClearReadyPlayer(slot);
             QueueReadyCheck();
             if (managedBotSlots.Remove(slot, out var botName))
+            {
                 requestedBots.Remove(botName);
+                SyncBotQuota();
+            }
             if (botFillRequesterSlot == slot)
             {
                 CancelBotFill();
@@ -124,7 +136,10 @@ public sealed partial class RepServerPlugin : BasePlugin
             if (client.IsBot && !client.IsHLTV)
             {
                 if (requestedBots.Contains(client.PlayerName) && !managedBotSlots.ContainsValue(client.PlayerName))
+                {
                     managedBotSlots[slot] = client.PlayerName;
+                    SyncBotQuota();
+                }
                 else if (managedBotSlots.GetValueOrDefault(slot) != client.PlayerName)
                     RejectUnrequestedBot(client);
             }
@@ -380,13 +395,38 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void RejectUnrequestedBot(CCSPlayerController bot)
     {
-        Console.Error.WriteLine($"[RepServer] CS2 skapade botten {bot.PlayerName} utan en begäran från RepServer. Botten tas bort.");
-        bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
+        if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
+            return;
+
+        var now = Server.EngineTime;
+        unexpectedBotBurst = now - lastUnexpectedBotAt <= UnexpectedBotBurstInterval ? unexpectedBotBurst + 1 : 1;
+        lastUnexpectedBotAt = now;
+        if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
+        {
+            autoRosterPending = false;
+            CancelBotFill();
+            requestedBots.Clear();
+            managedBotSlots.Clear();
+            SyncBotQuota();
+            Server.ExecuteCommand("bot_quota_mode normal; bot_quota 0; bot_kick");
+            ReportBotFill("Stoppade upprepad botpåfyllning från CS2. Admin kan fylla på igen med !set_bot_t eller !set_bot_ct.");
+            return;
+        }
+
+        if (managedBotSlots.Remove(bot.Slot, out var botName))
+            requestedBots.Remove(botName);
+        // Lower the quota before disconnecting, so the engine won't fill the slot again.
         SyncBotQuota();
+        if (!loggedUnexpectedBot)
+        {
+            Console.Error.WriteLine($"[RepServer] Tar bort botten {bot.PlayerName} från fel lag eller utanför påfyllningen.");
+            loggedUnexpectedBot = true;
+        }
+        bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
     }
 
     private void SyncBotQuota() =>
-        Server.ExecuteCommand($"bot_quota {requestedBots.Count.ToString(CultureInfo.InvariantCulture)}");
+        ConVar.Find("bot_quota")?.SetValue(managedBotSlots.Count);
 
     private HookResult RestrictSniperWeapons(EventItemPickup pickup, GameEventInfo info)
     {
@@ -539,22 +579,24 @@ public sealed partial class RepServerPlugin : BasePlugin
         botFillTimer = AddTimer(JoinGracePeriod, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    private bool CanSpawnBots() => connectingClients.Count == 0 && Server.EngineTime >= botSpawnReadyAt;
+    private bool HasConnectingHumans() => connectingClients.Any(slot =>
+        Utilities.GetPlayerFromSlot(slot) is not ({ IsValid: true, IsBot: true } or { IsValid: true, IsHLTV: true }));
+
+    private bool CanSpawnBots() => !HasConnectingHumans() && Server.EngineTime >= botSpawnReadyAt;
 
     private void StartInitialFillWhenReady()
     {
-        if (!CanSpawnBots())
-        {
-            botFillTimer = AddTimer(BotFillInterval, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
-            return;
-        }
-
-        var requester = Utilities.GetPlayers().FirstOrDefault(client =>
-            !client.IsBot && !client.IsHLTV && client.Slot == botFillRequesterSlot);
+        var humans = ConnectedHumans();
+        var requester = humans.FirstOrDefault(client => client.Slot == botFillRequesterSlot);
         if (requester is null)
         {
             botFillTimer = null;
             botFillRequesterSlot = null;
+            return;
+        }
+        if (!CanSpawnBots() || !humans.Any(client => (CsTeam)client.TeamNum is CsTeam.Terrorist or CsTeam.CounterTerrorist))
+        {
+            botFillTimer = AddTimer(BotFillInterval, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
             return;
         }
 
@@ -564,6 +606,8 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void StartBotFill(CCSPlayerController? player, CsTeam team, int target)
     {
+        unexpectedBotBurst = 0;
+        lastUnexpectedBotAt = double.NegativeInfinity;
         var teamLabel = BotTeamLabel(team);
         Console.WriteLine($"[RepServer] Botlista: {teamLabel}, mål {target}.");
         botFillRequesterSlot = player?.Slot;
@@ -590,6 +634,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         {
             if (bot.IsValid)
                 RejectUnrequestedBot(bot);
+            if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
+                return;
         }
 
         bots = bots.Where(bot => bot.IsValid && requestedBots.Contains(bot.PlayerName)).ToArray();
@@ -602,6 +648,9 @@ public sealed partial class RepServerPlugin : BasePlugin
                 RejectUnrequestedBot(wrongTeam);
             else
                 SyncBotQuota();
+            if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
+                return;
+
             if (rules is not null)
             {
                 var teamLimit = isT ? rules.MaxNumTerrorists : rules.MaxNumCTs;
@@ -652,8 +701,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, profile.Name), TimerFlags.STOP_ON_MAPCHANGE);
         if (expected is null)
             Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_join_team {teamLabel.ToLowerInvariant()}");
-        // Pin the quota in the same command batch before the bot manager can auto-fill.
-        Server.ExecuteCommand($"{botCommand} \"{profile.Name}\"; bot_quota {requestedBots.Count.ToString(CultureInfo.InvariantCulture)}");
+        SyncBotQuota();
+        Server.ExecuteCommand($"{botCommand} \"{profile.Name}\"");
     }
 
     private void CancelBotFill()

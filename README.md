@@ -65,7 +65,7 @@ Vid anslutning visas alla kommandon i kortform. `!help` visar den fullständiga 
 
 Motsvarande konsolkommandon har prefixet `css_`, till exempel `css_status`. Serverkonsolen har behörighet till alla kommandon.
 
-När första spelaren har anslutit helt väntar RepServer minst fem sekunder innan den lägger till 10 bottar från listan. I vanliga `bot-game` går de till T. Botkommandona väntar medan en spelare ansluter. Kör `!kick_bot` för att avbryta och tömma bottarna på kartan eller `!set_bot_t 20` för att höja målet på T. Standard är 25 platser totalt, med plats för fyra spelare, 20 bottar och en reservplats så långt kartan och spelmotorn tillåter.
+RepServer lägger automatiskt till 10 bottar från listan när en spelare har valt T eller CT och minst fem sekunder har gått sedan senaste spelaranslutningen. I vanliga `bot-game` går bottarna till T. Botkommandona väntar medan en spelare ansluter. Kör `!kick_bot` för att avbryta och tömma bottarna på kartan eller `!set_bot_t 20` för att höja målet på T. Standard är 25 platser totalt, med plats för fyra spelare, 20 bottar och en reservplats så långt kartan och spelmotorn tillåter.
 
 `!set_bot_t` och `!set_bot_ct` kan öka antalet utan att ta bort befintliga bots. Påfyllningen avbryts om den som startade den kopplas bort. Lägesprofilens botregler laddas igen vid kartbyte.
 

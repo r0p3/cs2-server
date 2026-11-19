@@ -136,7 +136,7 @@ public sealed partial class RepServerPlugin
             reply("[RepServer] Redo: " + string.Join(", ", group));
         foreach (var group in waiting.Chunk(4))
             reply("[RepServer] Väntar på: " + string.Join(", ", group));
-        if (connectingClients.Count != 0)
+        if (HasConnectingHumans())
             reply("[RepServer] Väntar också på anslutningar.");
     }
 
@@ -149,7 +149,7 @@ public sealed partial class RepServerPlugin
         Server.NextWorldUpdate(() =>
         {
             readyCheckQueued = false;
-            if (connectingClients.Count != 0 || !IsReadinessWarmup())
+            if (HasConnectingHumans() || !IsReadinessWarmup())
                 return;
 
             var humans = ConnectedHumans();
