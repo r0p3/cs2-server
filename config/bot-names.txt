@@ -5,7 +5,7 @@ Petter Toivonen | sniper
 Louis Litt | rifle
 Morgan Karlsson | rifle
 Ola-Conny | rifle
-Fatbottom Arselberg | rifle
+Rövfett Arselberg | rifle
 Greta Sugberg | sniper
 Le Fet | rifle
 Heckliga Hecklish | rifle
@@ -18,6 +18,6 @@ Vexdog | sniper
 r0p3 | rifle
 erk | rifle
 mark | rifle
-Chubby Beaver | rifle
+Tjocka Bävlingen | rifle
 Christian Green | rifle
-Dishwater | rifle
+Diskvatten | rifle

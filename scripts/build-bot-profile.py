@@ -27,6 +27,7 @@ def read_profiles(path):
 
 
 def build_database(profiles):
+    profiles = list(profiles)
     blocks = [
         """Default
 Skill = 100
@@ -55,9 +56,17 @@ WeaponPreference = awp
 WeaponPreference = ssg08
 End""",
     ]
+    used_names = {name.casefold() for name, _ in profiles}
+    alias_number = 0
     for name, role in profiles:
+        # Match the fallback name allocation in RepServerPlugin.LoadBotProfiles.
+        while True:
+            alias_number += 1
+            alias = f"__repbot_{alias_number}"
+            if alias not in used_names:
+                break
         template = "RepSniper" if role == "sniper" else "RepRifle"
-        blocks.append(f'{template} "{name}"\nEnd')
+        blocks.extend((f'{template} "{name}"\nEnd', f'{template} "{alias}"\nEnd'))
     return ("\n\n".join(blocks) + "\n").encode("utf-8")
 
 

@@ -14,7 +14,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.14";
+    public override string ModuleVersion => "0.4.16";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -32,7 +32,8 @@ public sealed partial class RepServerPlugin : BasePlugin
     private const int ReservedPlayerSlots = 1;
     private static readonly Regex MapName = new(@"\A[a-z0-9_]{1,64}\z");
     private string[] maps = [];
-    private sealed record BotProfile(string Name, string Role);
+    private sealed record BotProfile(string Name, string Role, string SpawnAlias);
+    private sealed record BotSpawn(BotProfile Profile, string SpawnName);
     private readonly List<BotProfile> botProfiles = new();
     private readonly HashSet<string> priorityBotNames = new(StringComparer.OrdinalIgnoreCase);
     private string activeMode = "bot-game";
@@ -41,7 +42,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private int? botFillRequesterSlot;
     private bool autoRosterPending = true;
     private readonly HashSet<int> connectingClients = new();
-    private readonly HashSet<string> requestedBots = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, BotProfile> requestedBots = new(StringComparer.Ordinal);
     private readonly Dictionary<int, string> managedBotSlots = new();
     private bool loggedUnexpectedBot;
     private Action? restoreChallengeRules;
@@ -143,16 +144,8 @@ public sealed partial class RepServerPlugin : BasePlugin
                 connectingClients.Remove(slot);
                 QueueReadyCheck();
             }
-            if (client.IsBot && !client.IsHLTV)
-            {
-                if (requestedBots.Contains(client.PlayerName) && !managedBotSlots.ContainsValue(client.PlayerName))
-                {
-                    managedBotSlots[slot] = client.PlayerName;
-                    SyncBotQuota();
-                }
-                else if (managedBotSlots.GetValueOrDefault(slot) != client.PlayerName)
-                    RejectUnrequestedBot(client);
-            }
+            if (client.IsBot && !client.IsHLTV && !TrackRequestedBot(client))
+                RejectUnrequestedBot(client);
         }));
         if (activeMode != "bot-dm-pistol")
             RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
@@ -529,8 +522,26 @@ public sealed partial class RepServerPlugin : BasePlugin
     private static CCSPlayerController[] CurrentBots() =>
         Utilities.GetPlayers().Where(client => client.IsBot && !client.IsHLTV).ToArray();
 
-    private BotProfile? FindBotProfile(string name) =>
-        botProfiles.FirstOrDefault(profile => string.Equals(profile.Name, name, StringComparison.Ordinal));
+    private bool TrackRequestedBot(CCSPlayerController bot)
+    {
+        if (managedBotSlots.ContainsKey(bot.Slot))
+            return true;
+
+        var spawnName = bot.PlayerName;
+        if (!requestedBots.TryGetValue(spawnName, out var profile) || managedBotSlots.ContainsValue(spawnName))
+            return false;
+
+        managedBotSlots[bot.Slot] = spawnName;
+        SyncBotQuota();
+        if (spawnName != profile.Name)
+            SetDisplayName(bot, profile.Name);
+        return true;
+    }
+
+    private BotProfile? FindBotProfile(CCSPlayerController bot) =>
+        managedBotSlots.TryGetValue(bot.Slot, out var spawnName)
+            ? requestedBots.GetValueOrDefault(spawnName)
+            : requestedBots.GetValueOrDefault(bot.PlayerName);
 
     private void RejectUnrequestedBot(CCSPlayerController bot)
     {
@@ -570,7 +581,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private HookResult RestrictSniperWeapons(EventItemPickup pickup, GameEventInfo info)
     {
         if (pickup.Userid is { IsValid: true, IsBot: true, IsHLTV: false } bot &&
-            FindBotProfile(bot.PlayerName)?.Role == "rifle")
+            FindBotProfile(bot)?.Role == "rifle")
         {
             var weapon = pickup.Item;
             if (weapon.StartsWith("weapon_", StringComparison.Ordinal))
@@ -585,6 +596,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     {
         botProfiles.Clear();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var profiles = new List<(string Name, string Role)>();
         var lineNumber = 0;
         foreach (var line in File.ReadLines("/opt/repserver/bot-names.txt"))
         {
@@ -603,7 +615,20 @@ public sealed partial class RepServerPlugin : BasePlugin
                 continue;
             }
 
-            botProfiles.Add(new BotProfile(name, role));
+            profiles.Add((name, role));
+        }
+
+        // Match the fallback profile names in build-bot-profile.py.
+        var aliasNumber = 0;
+        foreach (var (name, role) in profiles)
+        {
+            string alias;
+            do
+            {
+                alias = "__repbot_" + (++aliasNumber).ToString(CultureInfo.InvariantCulture);
+            } while (seen.Contains(alias));
+
+            botProfiles.Add(new BotProfile(name, role, alias));
         }
     }
 
@@ -752,15 +777,16 @@ public sealed partial class RepServerPlugin : BasePlugin
         var teamLabel = BotTeamLabel(team);
         Console.WriteLine($"[RepServer] Filling {teamLabel} to {target} bots.");
         botFillRequesterSlot = player?.Slot;
+        var rejectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // CS2 must finish the chat packet before it creates a bot.
-        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, null), TimerFlags.STOP_ON_MAPCHANGE);
+        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, rejectedNames), TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    private void CheckBotFill(CsTeam team, int target, string? expected)
+    private void CheckBotFill(CsTeam team, int target, HashSet<string> rejectedNames, BotSpawn? expected = null)
     {
         if (!CanSpawnBots())
         {
-            botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, expected), TimerFlags.STOP_ON_MAPCHANGE);
+            botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames, expected), TimerFlags.STOP_ON_MAPCHANGE);
             return;
         }
 
@@ -771,35 +797,46 @@ public sealed partial class RepServerPlugin : BasePlugin
         var isT = team == CsTeam.Terrorist;
         var rules = Utilities.GetGameRules();
         var teamHumans = clients.Count(client => !client.IsBot && client.TeamNum == (byte)team);
-        foreach (var bot in bots.Where(bot => !requestedBots.Contains(bot.PlayerName)))
+        var occupiedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var client in clients.Where(client => client.IsValid))
         {
-            if (bot.IsValid)
+            occupiedNames.Add(client.PlayerName);
+            if (IsReady(client))
+                occupiedNames.Add(readyPlayers[client.Slot].OriginalName);
+        }
+
+        foreach (var bot in bots.Where(bot => bot.IsValid))
+        {
+            if (!TrackRequestedBot(bot))
                 RejectUnrequestedBot(bot);
             if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
                 return;
         }
 
-        bots = bots.Where(bot => bot.IsValid && requestedBots.Contains(bot.PlayerName)).ToArray();
+        bots = bots.Where(bot => bot.IsValid && managedBotSlots.ContainsKey(bot.Slot)).ToArray();
         var teamCount = bots.Count(bot => bot.TeamNum == (byte)team);
-        if (expected is not null && !bots.Any(bot => bot.PlayerName == expected && bot.TeamNum == (byte)team))
+        if (expected is not null)
         {
-            requestedBots.Remove(expected);
-            var wrongTeam = bots.FirstOrDefault(bot => bot.PlayerName == expected);
-            if (wrongTeam is not null)
-                RejectUnrequestedBot(wrongTeam);
-            else
-                SyncBotQuota();
-            if (unexpectedBotBurst >= UnexpectedBotBurstLimit)
-                return;
-
-            if (rules is not null)
+            var spawned = bots.FirstOrDefault(bot => managedBotSlots[bot.Slot] == expected.SpawnName);
+            if (spawned is null)
             {
-                var teamLimit = isT ? rules.MaxNumTerrorists : rules.MaxNumCTs;
-                var spawnCount = isT ? rules.SpawnPointCount_Terrorist : rules.SpawnPointCount_CT;
-                Console.WriteLine($"[RepServer] {Server.MapName}: {teamLabel} {teamHumans + teamCount}/{teamLimit}, {spawnCount} spawn points, server {clients.Count}/{PlayerLimit} slots.");
+                requestedBots.Remove(expected.SpawnName);
+                rejectedNames.Add(expected.SpawnName);
+                SyncBotQuota();
+                Console.WriteLine($"[RepServer] CS2 did not add {expected.Profile.Name} to {teamLabel} using {expected.SpawnName}.");
             }
-            ReportBotFill($"CS2 did not add {expected} to {teamLabel}. Added {teamCount} of {target} bots.");
-            return;
+            else if (spawned.TeamNum != (byte)team)
+            {
+                rejectedNames.Add(expected.SpawnName);
+                Console.WriteLine($"[RepServer] CS2 added {expected.Profile.Name} to the wrong team using {expected.SpawnName}.");
+                RejectUnrequestedBot(spawned);
+                if (unexpectedBotBurst < UnexpectedBotBurstLimit)
+                {
+                    // Check the roster again after the wrong-team bot disconnects.
+                    botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames), TimerFlags.STOP_ON_MAPCHANGE);
+                }
+                return;
+            }
         }
         if (teamCount >= target)
         {
@@ -813,7 +850,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             return;
         }
 
-        var actualSnipers = bots.Count(bot => FindBotProfile(bot.PlayerName)?.Role == "sniper");
+        var actualSnipers = bots.Count(bot => FindBotProfile(bot)?.Role == "sniper");
         var requiredSnipers = (bots.Length + 1) / 5;
         if (actualSnipers > requiredSnipers || actualSnipers + 1 < requiredSnipers)
         {
@@ -822,9 +859,21 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
 
         var role = actualSnipers < requiredSnipers ? "sniper" : "rifle";
-        if (!RandomizedBots(role, requestedBots).TryDequeue(out var profile))
+        occupiedNames.UnionWith(requestedBots.Keys);
+        occupiedNames.UnionWith(rejectedNames);
+        var inUse = requestedBots.Values.Select(profile => profile.Name).ToHashSet(StringComparer.Ordinal);
+        var next = RandomizedBots(role, inUse)
+            .SelectMany(profile => new[] { new BotSpawn(profile, profile.Name), new BotSpawn(profile, profile.SpawnAlias) })
+            .FirstOrDefault(candidate => !occupiedNames.Contains(candidate.SpawnName));
+        if (next is null)
         {
-            ReportBotFill($"No unused {role} names remain. {teamLabel} has {teamCount} of {target} bots.");
+            if (rejectedNames.Count > 0 && rules is not null)
+            {
+                var teamLimit = isT ? rules.MaxNumTerrorists : rules.MaxNumCTs;
+                var spawnCount = isT ? rules.SpawnPointCount_Terrorist : rules.SpawnPointCount_CT;
+                Console.WriteLine($"[RepServer] {Server.MapName}: {teamLabel} {teamHumans + teamCount}/{teamLimit}, {spawnCount} spawn points, server {clients.Count}/{PlayerLimit} slots.");
+            }
+            ReportBotFill($"No available {role} names remain. {teamLabel} has {teamCount} of {target} bots.");
             return;
         }
 
@@ -838,12 +887,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         }
 
         var botCommand = isT ? "bot_add_t" : "bot_add_ct";
-        requestedBots.Add(profile.Name);
-        botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, profile.Name), TimerFlags.STOP_ON_MAPCHANGE);
+        requestedBots.Add(next.SpawnName, next.Profile);
+        botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames, next), TimerFlags.STOP_ON_MAPCHANGE);
         if (expected is null)
             Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_join_team {teamLabel.ToLowerInvariant()}");
         SyncBotQuota();
-        Server.ExecuteCommand($"{botCommand} \"{profile.Name}\"");
+        Server.ExecuteCommand($"{botCommand} \"{next.SpawnName}\"");
     }
 
     private void CancelBotFill()

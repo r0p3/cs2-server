@@ -2,6 +2,6 @@
 # Priority names are drawn first within each role.
 Petter Toivonen
 Rolf Mjunstedt
-Dishwater
+Diskvatten
 r0p3
 Pliip
