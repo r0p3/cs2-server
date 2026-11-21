@@ -14,7 +14,7 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.16";
+    public override string ModuleVersion => "0.4.17";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
@@ -891,8 +891,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames, next), TimerFlags.STOP_ON_MAPCHANGE);
         if (expected is null)
             Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_join_team {teamLabel.ToLowerInvariant()}");
-        SyncBotQuota();
-        Server.ExecuteCommand($"{botCommand} \"{next.SpawnName}\"");
+
+        // A named add can change the engine's quota. Pin it in the same command batch
+        // so the quota manager sees only one new slot before the bot's join callback.
+        var currentQuota = managedBotSlots.Count;
+        Server.ExecuteCommand(FormattableString.Invariant(
+            $"bot_quota {currentQuota}; {botCommand} \"{next.SpawnName}\"; bot_quota {currentQuota + 1}"));
     }
 
     private void CancelBotFill()
