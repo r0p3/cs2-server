@@ -32,7 +32,8 @@ public sealed partial class RepServerPlugin
         AddCommandListener("say", OnRepServerChat, HookMode.Pre);
         AddCommandListener("say_team", OnRepServerChat, HookMode.Pre);
         RegisterListener<Listeners.OnTick>(UpdateMenus);
-        RegisterListener<Listeners.CheckTransmit>(FilterMenuPanels);
+        RegisterListener<Listeners.OnTick>(UpdateReadyHud);
+        RegisterListener<Listeners.CheckTransmit>(FilterPlayerPanels);
         RegisterListener<Listeners.OnClientDisconnect>(CloseMenu);
         RegisterListener<Listeners.OnMapEnd>(CloseAllMenus);
     }
@@ -42,6 +43,8 @@ public sealed partial class RepServerPlugin
         workshopLifetime.Cancel();
         StopChallenge();
         ResetReadyPlayers();
+        CloseAllReadyHudPanels();
+        roundStats = null;
         CloseAllMenus();
     }
 
@@ -59,6 +62,16 @@ public sealed partial class RepServerPlugin
             else
                 QueueOpenMenu(player);
             return HookResult.Handled;
+        }
+        if (chat.Equals("ready", StringComparison.OrdinalIgnoreCase) ||
+            chat.Equals("unready", StringComparison.OrdinalIgnoreCase))
+        {
+            if (IsReadinessWarmup())
+            {
+                SetReady(player, player.PrintToChat, chat.Equals("ready", StringComparison.OrdinalIgnoreCase));
+                return HookResult.Handled;
+            }
+            return HookResult.Continue;
         }
         if (chat.Length == 0 || chat[0] is not ('!' or '/'))
             return HookResult.Continue;
@@ -193,24 +206,12 @@ public sealed partial class RepServerPlugin
         if (session is null || !session.Panel.IsValid || session.Pawn.Raw != player.PlayerPawn.Raw)
         {
             CloseMenu(player.Slot);
-            var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
-            if (panel is not { IsValid: true })
+            var panel = CreateViewPanel(30, 0.021f, drawBackground: true);
+            if (panel is null)
             {
                 player.PrintToChat("[RepServer] Could not open the menu.");
                 return;
             }
-
-            panel.FontName = "Arial Bold";
-            panel.FontSize = 30;
-            panel.WorldUnitsPerPx = 0.021f;
-            panel.Fullbright = true;
-            panel.DrawBackground = true;
-            panel.Color = Color.FromArgb(255, 238, 235, 227);
-            panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
-            panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_TOP;
-            panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
-            panel.DispatchSpawn();
-            panel.AcceptInput("Enable");
 
             session = new MenuSession(panel, new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw),
                 pawn.VelocityModifier);
@@ -223,7 +224,7 @@ public sealed partial class RepServerPlugin
         session.Back = back;
         session.PreviousButtons = player.Buttons & MenuButtons;
         session.Selected = 0;
-        PositionMenuPanel(player, session.Panel);
+        PositionViewPanel(player, session.Panel);
         RenderMenu(session);
     }
 
@@ -245,7 +246,7 @@ public sealed partial class RepServerPlugin
             }
 
             SetMenuSpeed(pawn, 0);
-            PositionMenuPanel(player, session.Panel);
+            PositionViewPanel(player, session.Panel);
             var buttons = player.Buttons & MenuButtons;
             var pressed = buttons & ~session.PreviousButtons;
             session.PreviousButtons = buttons;
@@ -269,7 +270,27 @@ public sealed partial class RepServerPlugin
         }
     }
 
-    private static void PositionMenuPanel(CCSPlayerController player, CPointWorldText panel)
+    private static CPointWorldText? CreateViewPanel(int fontSize, float scale, bool drawBackground)
+    {
+        var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
+        if (panel is not { IsValid: true })
+            return null;
+
+        panel.FontName = "Arial Bold";
+        panel.FontSize = fontSize;
+        panel.WorldUnitsPerPx = scale;
+        panel.Fullbright = true;
+        panel.DrawBackground = drawBackground;
+        panel.Color = Color.FromArgb(255, 238, 235, 227);
+        panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
+        panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_TOP;
+        panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
+        panel.DispatchSpawn();
+        panel.AcceptInput("Enable");
+        return panel;
+    }
+
+    private static void PositionViewPanel(CCSPlayerController player, CPointWorldText panel)
     {
         var pawn = player.PlayerPawn.Value;
         if (pawn?.AbsOrigin is not { } origin)
@@ -283,7 +304,7 @@ public sealed partial class RepServerPlugin
         const float left = 16;
         const float up = 9;
         var horizontalForward = depth * cosPitch + up * sinPitch;
-        // Offset along the camera's left and up axes so the menu follows the view.
+        // Offset the panel along the camera's left and up axes.
         var position = new Vector(
             origin.X + horizontalForward * cosYaw - left * sinYaw,
             origin.Y + horizontalForward * sinYaw + left * cosYaw,
@@ -291,7 +312,7 @@ public sealed partial class RepServerPlugin
         panel.Teleport(position, new QAngle(0, look.Y - 90, 90 - look.X));
     }
 
-    private void FilterMenuPanels(CCheckTransmitInfoList recipients)
+    private void FilterPlayerPanels(CCheckTransmitInfoList recipients)
     {
         foreach (var (info, client) in recipients)
         {
@@ -299,6 +320,11 @@ public sealed partial class RepServerPlugin
             {
                 if (client?.Slot != owner && session.Panel.IsValid)
                     info.TransmitEntities.Remove(session.Panel);
+            }
+            foreach (var (owner, hud) in readyHudPanels)
+            {
+                if (client?.Slot != owner && hud.Panel.IsValid)
+                    info.TransmitEntities.Remove(hud.Panel);
             }
         }
     }

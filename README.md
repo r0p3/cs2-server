@@ -72,7 +72,7 @@ The server shows a command summary when you join. Run `!help` for syntax, descri
 | `!change-mode bot-dm` or `!mode bot-dm` | Admin | Save the mode and restart the server |
 | `!mode bot-game t` | Admin | Play on T against CT bots |
 | `!live` | Admin | End warmup in competitive modes |
-| `!16_0` | Admin | Start or stop the CT 16–0 challenge on the current map |
+| `!16ct`, `!16t` | Admin | Set up a 16–0 challenge with ten bots on the opposing team |
 | `!ready`, `!unready`, `!readystatus` | Everyone | Set or clear your ready marker or show readiness in chat |
 | `!restart` | Admin | Restart the match |
 | `!pause`, `!unpause` | Admin | Request a match pause or resume the match |
@@ -97,11 +97,13 @@ The fill commands only add bots. A fill started by a player stops if that player
 
 `bot-game` uses competitive rules and places bots on T. Use `!mode bot-game t` to play on T against CT bots. In either competitive profile, both players and bots receive a defuse kit when they spawn. CS2's bomb rules allow CT to defuse.
 
-During warmup, type `!ready` or choose **Match readiness → Mark me as ready**. Hold **Tab** to see `[READY]` before the names of ready players. Use `!unready` to clear your marker or `!readystatus` to see the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
+During warmup, type `ready` or `!ready`, or choose **Match readiness → Mark me as ready**. Use `unready` or `!unready` to clear your marker. Each change is announced in chat with the ready count, and a small panel in the upper left shows your status while alive. Hold **Tab** to see `[READY]` before the names of ready players, or use `!readystatus` for the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
 
 `bot-dm` runs free-for-all Deathmatch with fast respawns. `bot-dm-pistol` uses the same rules with pistols and knives. See [the mode profiles](config/modes/README.md).
 
-Use `!16_0` as an admin during a competitive game to start the CT 16–0 challenge on the current map. The command starts a fresh match. If T wins a round or the round is drawn, the match restarts from 0–0. A 16–0 CT win completes the challenge. Use `!16_0` again to turn it off. The challenge also ends on map change.
+Use `!16ct` to play CT against ten T bots, or `!16t` to play T against ten CT bots. The command removes bots from the side you play on and fills the other side. It preserves the current match and warmup state. The challenge counts from the next live round. If the opposing team wins a round or the round is drawn, the match restarts from 0–0. A 16–0 win for the selected side completes the challenge. The challenge also ends on map change.
+
+After each live competitive round, chat shows one line per human participant with the round's kills, deaths, assists, and damage, plus the change in their overall match headshot percentage.
 
 The first startup uses `bot-game`. The selected mode is saved in `data/state/mode`. Changing modes restarts CS2 under Docker, and players must reconnect. To reset the default manually, write `bot-game` to `data/state/mode` and run `docker compose restart cs2`.
 

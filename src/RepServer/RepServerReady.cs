@@ -9,8 +9,11 @@ public sealed partial class RepServerPlugin
     private const string ReadyPrefix = "[READY] ";
     private const int PlayerNameMaxBytes = 127;
     private sealed record ReadyPlayer(int UserId, string OriginalName, string MarkedName);
+    private readonly record struct ReadyHudStatus(bool IsReady, int ReadyCount, int PlayerCount);
+    private sealed record ReadyHudPanel(CPointWorldText Panel, ReadyHudStatus Status);
 
     private readonly Dictionary<int, ReadyPlayer> readyPlayers = new();
+    private readonly Dictionary<int, ReadyHudPanel> readyHudPanels = new();
     private float? readyWarmupStart;
     private bool readyCheckQueued;
 
@@ -96,22 +99,74 @@ public sealed partial class RepServerPlugin
             return;
         }
 
+        var name = ready ? player.PlayerName : readyPlayers[player.Slot].OriginalName;
         if (ready)
         {
-            var originalName = player.PlayerName;
-            var markedName = MarkedReadyName(originalName);
+            var markedName = MarkedReadyName(name);
             SetDisplayName(player, markedName);
-            readyPlayers[player.Slot] = new(userId, originalName, markedName);
+            readyPlayers[player.Slot] = new(userId, name, markedName);
         }
         else
         {
             ClearReadyPlayer(player.Slot);
         }
 
-        reply(ready
-            ? "[RepServer] You are ready. Hold Tab to see who is ready."
-            : "[RepServer] You are no longer marked as ready.");
+        var humans = ConnectedHumans();
+        var status = ready ? "ready" : "unready";
+        Server.PrintToChatAll($"[RepServer] {name} is {status}, {humans.Count(IsReady)} out of {humans.Length}");
         QueueReadyCheck();
+    }
+
+    private void UpdateReadyHud()
+    {
+        if (!IsReadinessWarmup())
+        {
+            if (readyHudPanels.Count != 0)
+                CloseAllReadyHudPanels();
+            return;
+        }
+
+        var humans = ConnectedHumans();
+        var readyCount = humans.Count(IsReady);
+        foreach (var player in humans)
+        {
+            if (!player.PawnIsAlive || menus.ContainsKey(player.Slot))
+            {
+                CloseReadyHudPanel(player.Slot);
+                continue;
+            }
+
+            var status = new ReadyHudStatus(IsReady(player), readyCount, humans.Length);
+            if (!readyHudPanels.TryGetValue(player.Slot, out var hud) || !hud.Panel.IsValid)
+            {
+                var panel = CreateViewPanel(24, 0.015f, drawBackground: false);
+                if (panel is null)
+                    continue;
+
+                hud = new ReadyHudPanel(panel, default);
+            }
+
+            if (hud.Status != status)
+            {
+                var label = status.IsReady ? "Ready" : "Unready";
+                var message = $"{label}  |  {status.ReadyCount}/{status.PlayerCount}";
+                hud.Panel.AcceptInput("SetMessage", value: message);
+                readyHudPanels[player.Slot] = hud with { Status = status };
+            }
+            PositionViewPanel(player, hud.Panel);
+        }
+    }
+
+    private void CloseReadyHudPanel(int slot)
+    {
+        if (readyHudPanels.Remove(slot, out var hud) && hud.Panel.IsValid)
+            hud.Panel.Remove();
+    }
+
+    private void CloseAllReadyHudPanels()
+    {
+        foreach (var slot in readyHudPanels.Keys.ToArray())
+            CloseReadyHudPanel(slot);
     }
 
     private void ShowReadyStatus(Action<string> reply)

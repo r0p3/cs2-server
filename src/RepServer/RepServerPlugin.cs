@@ -46,6 +46,8 @@ public sealed partial class RepServerPlugin : BasePlugin
     private readonly Dictionary<int, string> managedBotSlots = new();
     private bool loggedUnexpectedBot;
     private Action? restoreChallengeRules;
+    private CsTeam challengeSide;
+    private bool challengeRoundActive;
     private bool challengeRestartPending;
     private CounterStrikeSharp.API.Modules.Timers.Timer? challengeRetryTimer;
     private int unexpectedBotBurst;
@@ -105,18 +107,22 @@ public sealed partial class RepServerPlugin : BasePlugin
             autoRosterPending = true;
             botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
             ResetReadyPlayers();
+            roundStats = null;
             RememberMap(map);
         });
         RegisterListener<Listeners.OnMapEnd>(() =>
         {
             StopChallenge();
             ResetReadyPlayers();
+            CloseAllReadyHudPanels();
+            roundStats = null;
         });
         RegisterListener<Listeners.OnClientConnected>(slot => connectingClients.Add(slot));
         RegisterListener<Listeners.OnClientDisconnect>(slot =>
         {
             connectingClients.Remove(slot);
             ClearReadyPlayer(slot);
+            CloseReadyHudPanel(slot);
             QueueReadyCheck();
             if (managedBotSlots.Remove(slot, out var botName))
             {
@@ -151,7 +157,16 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventItemPickup>(RestrictSniperWeapons);
 
         RegisterMenuListeners();
-        RegisterEventHandler<EventRoundEnd>((round, _) => OnChallengeRoundEnd(round));
+        RegisterEventHandler<EventRoundEnd>((round, _) =>
+        {
+            QueueRoundStats(round);
+            return OnChallengeRoundEnd(round);
+        });
+        if (IsCompetitiveMode)
+        {
+            RegisterEventHandler<EventPlayerDeath>(TrackRoundDeath);
+            RegisterEventHandler<EventPlayerHurt>(TrackRoundDamage);
+        }
         RegisterEventHandler<EventCsWinPanelMatch>((_, _) => OnChallengeMatchEnd());
         RegisterEventHandler<EventPlayerConnect>((connection, info) =>
         {
@@ -174,8 +189,11 @@ public sealed partial class RepServerPlugin : BasePlugin
         }, HookMode.Pre);
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
+            var liveRound = Utilities.GetGameRules() is { WarmupPeriod: false };
             if (challengeRetryTimer is null)
                 challengeRestartPending = false;
+            challengeRoundActive = restoreChallengeRules is not null && liveRound;
+            BeginRoundStats(liveRound);
             if (readyPlayers.Count != 0)
                 IsReadinessWarmup();
             return HookResult.Continue;
@@ -266,8 +284,10 @@ public sealed partial class RepServerPlugin : BasePlugin
 
             PreviewBotRoster(target, reply);
         }, arguments: "<count>");
-        RegisterChatCommand("16_0", "Start or stop the CT 16-0 challenge",
-            (player, _, reply) => ToggleChallenge(player, reply), admin: true);
+        RegisterChatCommand("16t", "Set up the T 16-0 challenge against CT bots",
+            (player, _, reply) => SetChallenge(player, reply, CsTeam.Terrorist), admin: true);
+        RegisterChatCommand("16ct", "Set up the CT 16-0 challenge against T bots",
+            (player, _, reply) => SetChallenge(player, reply, CsTeam.CounterTerrorist), admin: true);
         RegisterChatCommand("live", "End warmup in competitive modes", (player, _, reply) => StartMatch(player, reply), admin: true);
 
         AddCommand("css_workshop_result", "Check the result of a Workshop lookup started from the server console",
@@ -293,6 +313,7 @@ public sealed partial class RepServerPlugin : BasePlugin
                 if (player.IsBot || player.IsHLTV)
                     return HookResult.Continue;
 
+                CapturePlayerRoundBaseline(player);
                 botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
                 ScheduleInitialFill(player);
                 player.PrintToChat($"[RepServer] Mode: {ModeLabel(activeMode)} | map: {Server.MapName}");
@@ -313,33 +334,45 @@ public sealed partial class RepServerPlugin : BasePlugin
         _ => mode
     };
 
-    private void ToggleChallenge(CCSPlayerController? player, Action<string> reply)
+    private void SetChallenge(CCSPlayerController? player, Action<string> reply, CsTeam side)
     {
         if (!CheckAdmin(player, reply))
             return;
-        if (restoreChallengeRules is not null)
+        if (!IsCompetitiveMode || pendingMode is not null || Utilities.GetGameRules() is null)
         {
-            StopChallenge();
-            const string message = "[RepServer] CT 16-0 challenge stopped.";
-            if (player is null)
-                reply(message);
-            Server.PrintToChatAll(message);
-            return;
-        }
-        if (!IsCompetitiveMode || pendingMode is not null || Utilities.GetGameRules() is not { } rules)
-        {
-            reply("[RepServer] The CT 16-0 challenge requires an active competitive map.");
+            reply("[RepServer] The 16-0 challenge requires an active competitive map.");
             return;
         }
 
+        if (restoreChallengeRules is null && !ApplyChallengeRules())
+        {
+            reply("[RepServer] Could not apply the 16-0 match rules.");
+            return;
+        }
+
+        challengeRetryTimer?.Kill();
+        challengeRetryTimer = null;
+        challengeRestartPending = false;
+        challengeRoundActive = false;
+        challengeSide = side;
+        autoRosterPending = false;
+        CancelBotFill();
+        var botTeam = side == CsTeam.CounterTerrorist ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
+        StartBotFill(null, botTeam, InitialBotCount, prepareChallengeRoster: true);
+
+        var message = $"[RepServer] {TeamLabel(side)} 16-0 challenge set up. Join {TeamLabel(side)} to play against {InitialBotCount} {TeamLabel(botTeam)} bots.";
+        if (player is null)
+            reply(message);
+        Server.PrintToChatAll(message);
+    }
+
+    private bool ApplyChallengeRules()
+    {
         var maxRounds = ConVar.Find("mp_maxrounds");
         var halftime = ConVar.Find("mp_halftime");
         var clinch = ConVar.Find("mp_match_can_clinch");
         if (maxRounds is null || halftime is null || clinch is null)
-        {
-            reply("[RepServer] Could not apply the CT 16-0 match rules.");
-            return;
-        }
+            return false;
 
         var originalMaxRounds = maxRounds.GetPrimitiveValue<int>();
         var originalHalftime = halftime.GetPrimitiveValue<bool>();
@@ -354,10 +387,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         halftime.SetValue(false);
         clinch.SetValue(true);
 
-        var start = rules.WarmupPeriod ? "mp_warmup_end" : "mp_restartgame 1";
-        challengeRestartPending = true;
-        ResetReadyPlayers();
-        Execute(player, reply, start, "CT 16-0 challenge started. Win 16 rounds in a row as CT.");
+        return true;
     }
 
     private void StopChallenge()
@@ -365,6 +395,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         challengeRetryTimer?.Kill();
         challengeRetryTimer = null;
         challengeRestartPending = false;
+        challengeRoundActive = false;
         restoreChallengeRules?.Invoke();
         restoreChallengeRules = null;
     }
@@ -372,7 +403,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private HookResult OnChallengeRoundEnd(EventRoundEnd round)
     {
         var reason = (RoundEndReason)round.Reason;
-        if (restoreChallengeRules is null || Utilities.GetGameRules() is not { WarmupPeriod: false } ||
+        if (!challengeRoundActive || Utilities.GetGameRules() is not { WarmupPeriod: false } ||
             reason == RoundEndReason.GameCommencing)
             return HookResult.Continue;
 
@@ -380,29 +411,31 @@ public sealed partial class RepServerPlugin : BasePlugin
             RetryChallenge("A team surrendered.");
         else if (reason == RoundEndReason.RoundDraw)
             RetryChallenge("The round was a draw.");
-        else if (round.Winner == (int)CsTeam.Terrorist)
-            RetryChallenge("T won a round.");
+        else if (round.Winner is (int)CsTeam.Terrorist or (int)CsTeam.CounterTerrorist &&
+            round.Winner != (int)challengeSide)
+            RetryChallenge($"{TeamLabel((CsTeam)round.Winner)} won a round.");
         return HookResult.Continue;
     }
 
     private HookResult OnChallengeMatchEnd()
     {
-        if (restoreChallengeRules is null || challengeRestartPending || pendingMode is not null)
+        if (!challengeRoundActive || challengeRestartPending || pendingMode is not null)
             return HookResult.Continue;
 
         var teams = Utilities.FindAllEntitiesByDesignerName<CCSTeam>("cs_team_manager").ToArray();
-        var ct = teams.FirstOrDefault(team => team.TeamNum == (byte)CsTeam.CounterTerrorist);
-        var t = teams.FirstOrDefault(team => team.TeamNum == (byte)CsTeam.Terrorist);
-        if (ct is not null && t is not null)
+        var side = teams.FirstOrDefault(team => team.TeamNum == (byte)challengeSide);
+        var opponent = teams.FirstOrDefault(team => team.TeamNum != (byte)challengeSide &&
+            team.TeamNum is (byte)CsTeam.Terrorist or (byte)CsTeam.CounterTerrorist);
+        if (side is not null && opponent is not null)
         {
-            if (ct.Score == 16 && t.Score == 0)
+            if (side.Score == 16 && opponent.Score == 0)
             {
-                Server.PrintToChatAll("[RepServer] Challenge complete. CT won 16-0!");
+                Server.PrintToChatAll($"[RepServer] Challenge complete. {TeamLabel(challengeSide)} won 16-0!");
                 StopChallenge();
             }
             else
             {
-                RetryChallenge($"The match ended {ct.Score}-{t.Score}.");
+                RetryChallenge($"The match ended {side.Score}-{opponent.Score}.");
             }
         }
         return HookResult.Continue;
@@ -415,7 +448,7 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         challengeRestartPending = true;
         const string restart = "mp_restartgame 1";
-        AnnounceCommand(null, restart, $"CT 16-0 challenge failed. {reason} Restarting in three seconds.");
+        AnnounceCommand(null, restart, $"{TeamLabel(challengeSide)} 16-0 challenge failed. {reason} Restarting in three seconds.");
         challengeRetryTimer = AddTimer(2.0f, () =>
         {
             challengeRetryTimer = null;
@@ -723,17 +756,17 @@ public sealed partial class RepServerPlugin : BasePlugin
         var current = CurrentBots().Count(bot => bot.TeamNum == (byte)team);
         if (current >= target)
         {
-            reply($"[RepServer] {BotTeamLabel(team)} already has {current} bots.");
+            reply($"[RepServer] {TeamLabel(team)} already has {current} bots.");
             return;
         }
 
         autoRosterPending = false;
         if (player is null)
-            reply($"[RepServer] Filling {BotTeamLabel(team)} to {target} bots.");
+            reply($"[RepServer] Filling {TeamLabel(team)} to {target} bots.");
         StartBotFill(player, team, target);
     }
 
-    private static string BotTeamLabel(CsTeam team) => team == CsTeam.Terrorist ? "T" : "CT";
+    private static string TeamLabel(CsTeam team) => team == CsTeam.Terrorist ? "T" : "CT";
 
     private void ScheduleInitialFill(CCSPlayerController player)
     {
@@ -770,16 +803,54 @@ public sealed partial class RepServerPlugin : BasePlugin
         StartBotFill(requester, team, InitialBotCount);
     }
 
-    private void StartBotFill(CCSPlayerController? player, CsTeam team, int target)
+    private void StartBotFill(CCSPlayerController? player, CsTeam team, int target, bool prepareChallengeRoster = false)
     {
         unexpectedBotBurst = 0;
         lastUnexpectedBotAt = double.NegativeInfinity;
-        var teamLabel = BotTeamLabel(team);
+        var teamLabel = TeamLabel(team);
         Console.WriteLine($"[RepServer] Filling {teamLabel} to {target} bots.");
         botFillRequesterSlot = player?.Slot;
         var rejectedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         // CS2 must finish the chat packet before it creates a bot.
-        botFillTimer = AddTimer(0.1f, () => CheckBotFill(team, target, rejectedNames), TimerFlags.STOP_ON_MAPCHANGE);
+        botFillTimer = AddTimer(0.1f, () =>
+        {
+            if (prepareChallengeRoster && PrepareChallengeRoster(team, target))
+            {
+                botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames),
+                    TimerFlags.STOP_ON_MAPCHANGE);
+                return;
+            }
+            CheckBotFill(team, target, rejectedNames);
+        }, TimerFlags.STOP_ON_MAPCHANGE);
+    }
+
+    private bool PrepareChallengeRoster(CsTeam team, int target)
+    {
+        var bots = CurrentBots();
+        foreach (var bot in bots)
+            TrackRequestedBot(bot);
+
+        var keep = bots.Where(bot => bot.TeamNum == (byte)team && managedBotSlots.ContainsKey(bot.Slot))
+            .Take(target).ToList();
+        // The fill expects one sniper in each group of five, including any bots we keep.
+        if (keep.Count(bot => FindBotProfile(bot)?.Role == "sniper") != keep.Count / 5)
+            keep.Clear();
+
+        var keptSlots = keep.Select(bot => bot.Slot).ToHashSet();
+        foreach (var slot in managedBotSlots.Keys.Where(slot => !keptSlots.Contains(slot)).ToArray())
+            managedBotSlots.Remove(slot);
+        var keptNames = managedBotSlots.Values.ToHashSet(StringComparer.Ordinal);
+        foreach (var name in requestedBots.Keys.Where(name => !keptNames.Contains(name)).ToArray())
+            requestedBots.Remove(name);
+
+        Server.ExecuteCommand($"{BotTeamSettings}; bot_quota_mode normal; bot_join_team {TeamLabel(team).ToLowerInvariant()}");
+        SyncBotQuota();
+        foreach (var bot in bots)
+        {
+            if (!keptSlots.Contains(bot.Slot) && bot.IsValid)
+                bot.Disconnect(NetworkDisconnectionReason.NETWORK_DISCONNECT_KICKED);
+        }
+        return bots.Length != keep.Count;
     }
 
     private void CheckBotFill(CsTeam team, int target, HashSet<string> rejectedNames, BotSpawn? expected = null)
@@ -793,7 +864,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         botFillTimer = null;
         var clients = Utilities.GetPlayers();
         var bots = clients.Where(client => client.IsBot && !client.IsHLTV).ToArray();
-        var teamLabel = BotTeamLabel(team);
+        var teamLabel = TeamLabel(team);
         var isT = team == CsTeam.Terrorist;
         var rules = Utilities.GetGameRules();
         var teamHumans = clients.Count(client => !client.IsBot && client.TeamNum == (byte)team);
