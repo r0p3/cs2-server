@@ -74,6 +74,7 @@ public sealed partial class RepServerPlugin : BasePlugin
                 if (@event.Userid is { IsValid: true, IsHLTV: false } player &&
                     player.PlayerPawn.Value is { IsValid: true })
                 {
+                    TrackRoundSpawn(player);
                     var pawnHandle = new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw);
                     Server.NextWorldUpdate(() =>
                     {
@@ -107,6 +108,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             autoRosterPending = true;
             botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
             ResetReadyPlayers();
+            nextReadyHudUpdate = 0;
             roundStats = null;
             RememberMap(map);
         });
@@ -114,7 +116,6 @@ public sealed partial class RepServerPlugin : BasePlugin
         {
             StopChallenge();
             ResetReadyPlayers();
-            CloseAllReadyHudPanels();
             roundStats = null;
         });
         RegisterListener<Listeners.OnClientConnected>(slot => connectingClients.Add(slot));
@@ -122,7 +123,6 @@ public sealed partial class RepServerPlugin : BasePlugin
         {
             connectingClients.Remove(slot);
             ClearReadyPlayer(slot);
-            CloseReadyHudPanel(slot);
             QueueReadyCheck();
             if (managedBotSlots.Remove(slot, out var botName))
             {
@@ -166,6 +166,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         {
             RegisterEventHandler<EventPlayerDeath>(TrackRoundDeath);
             RegisterEventHandler<EventPlayerHurt>(TrackRoundDamage);
+            RegisterEventHandler<EventBombPlanted>(TrackBombPlant);
+            RegisterEventHandler<EventBombDefused>(TrackBombDefuse, HookMode.Pre);
         }
         RegisterEventHandler<EventCsWinPanelMatch>((_, _) => OnChallengeMatchEnd());
         RegisterEventHandler<EventPlayerConnect>((connection, info) =>
@@ -313,7 +315,7 @@ public sealed partial class RepServerPlugin : BasePlugin
                 if (player.IsBot || player.IsHLTV)
                     return HookResult.Continue;
 
-                CapturePlayerRoundBaseline(player);
+                GetRoundPlayerStats(player);
                 botSpawnReadyAt = Server.EngineTime + JoinGracePeriod;
                 ScheduleInitialFill(player);
                 player.PrintToChat($"[RepServer] Mode: {ModeLabel(activeMode)} | map: {Server.MapName}");

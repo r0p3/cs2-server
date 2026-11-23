@@ -33,7 +33,7 @@ public sealed partial class RepServerPlugin
         AddCommandListener("say_team", OnRepServerChat, HookMode.Pre);
         RegisterListener<Listeners.OnTick>(UpdateMenus);
         RegisterListener<Listeners.OnTick>(UpdateReadyHud);
-        RegisterListener<Listeners.CheckTransmit>(FilterPlayerPanels);
+        RegisterListener<Listeners.CheckTransmit>(FilterMenuPanels);
         RegisterListener<Listeners.OnClientDisconnect>(CloseMenu);
         RegisterListener<Listeners.OnMapEnd>(CloseAllMenus);
     }
@@ -43,7 +43,6 @@ public sealed partial class RepServerPlugin
         workshopLifetime.Cancel();
         StopChallenge();
         ResetReadyPlayers();
-        CloseAllReadyHudPanels();
         roundStats = null;
         CloseAllMenus();
     }
@@ -206,12 +205,24 @@ public sealed partial class RepServerPlugin
         if (session is null || !session.Panel.IsValid || session.Pawn.Raw != player.PlayerPawn.Raw)
         {
             CloseMenu(player.Slot);
-            var panel = CreateViewPanel(30, 0.021f, drawBackground: true);
-            if (panel is null)
+            var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
+            if (panel is not { IsValid: true })
             {
                 player.PrintToChat("[RepServer] Could not open the menu.");
                 return;
             }
+
+            panel.FontName = "Arial Bold";
+            panel.FontSize = 30;
+            panel.WorldUnitsPerPx = 0.021f;
+            panel.Fullbright = true;
+            panel.DrawBackground = true;
+            panel.Color = Color.FromArgb(255, 238, 235, 227);
+            panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
+            panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_TOP;
+            panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
+            panel.DispatchSpawn();
+            panel.AcceptInput("Enable");
 
             session = new MenuSession(panel, new CHandle<CCSPlayerPawn>(player.PlayerPawn.Raw),
                 pawn.VelocityModifier);
@@ -224,7 +235,7 @@ public sealed partial class RepServerPlugin
         session.Back = back;
         session.PreviousButtons = player.Buttons & MenuButtons;
         session.Selected = 0;
-        PositionViewPanel(player, session.Panel);
+        PositionMenuPanel(player, session.Panel);
         RenderMenu(session);
     }
 
@@ -246,7 +257,7 @@ public sealed partial class RepServerPlugin
             }
 
             SetMenuSpeed(pawn, 0);
-            PositionViewPanel(player, session.Panel);
+            PositionMenuPanel(player, session.Panel);
             var buttons = player.Buttons & MenuButtons;
             var pressed = buttons & ~session.PreviousButtons;
             session.PreviousButtons = buttons;
@@ -270,27 +281,7 @@ public sealed partial class RepServerPlugin
         }
     }
 
-    private static CPointWorldText? CreateViewPanel(int fontSize, float scale, bool drawBackground)
-    {
-        var panel = Utilities.CreateEntityByName<CPointWorldText>("point_worldtext");
-        if (panel is not { IsValid: true })
-            return null;
-
-        panel.FontName = "Arial Bold";
-        panel.FontSize = fontSize;
-        panel.WorldUnitsPerPx = scale;
-        panel.Fullbright = true;
-        panel.DrawBackground = drawBackground;
-        panel.Color = Color.FromArgb(255, 238, 235, 227);
-        panel.JustifyHorizontal = PointWorldTextJustifyHorizontal_t.POINT_WORLD_TEXT_JUSTIFY_HORIZONTAL_LEFT;
-        panel.JustifyVertical = PointWorldTextJustifyVertical_t.POINT_WORLD_TEXT_JUSTIFY_VERTICAL_TOP;
-        panel.ReorientMode = PointWorldTextReorientMode_t.POINT_WORLD_TEXT_REORIENT_NONE;
-        panel.DispatchSpawn();
-        panel.AcceptInput("Enable");
-        return panel;
-    }
-
-    private static void PositionViewPanel(CCSPlayerController player, CPointWorldText panel)
+    private static void PositionMenuPanel(CCSPlayerController player, CPointWorldText panel)
     {
         var pawn = player.PlayerPawn.Value;
         if (pawn?.AbsOrigin is not { } origin)
@@ -312,7 +303,7 @@ public sealed partial class RepServerPlugin
         panel.Teleport(position, new QAngle(0, look.Y - 90, 90 - look.X));
     }
 
-    private void FilterPlayerPanels(CCheckTransmitInfoList recipients)
+    private void FilterMenuPanels(CCheckTransmitInfoList recipients)
     {
         foreach (var (info, client) in recipients)
         {
@@ -320,11 +311,6 @@ public sealed partial class RepServerPlugin
             {
                 if (client?.Slot != owner && session.Panel.IsValid)
                     info.TransmitEntities.Remove(session.Panel);
-            }
-            foreach (var (owner, hud) in readyHudPanels)
-            {
-                if (client?.Slot != owner && hud.Panel.IsValid)
-                    info.TransmitEntities.Remove(hud.Panel);
             }
         }
     }

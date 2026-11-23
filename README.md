@@ -97,17 +97,23 @@ The fill commands only add bots. A fill started by a player stops if that player
 
 `bot-game` uses competitive rules and places bots on T. Use `!mode bot-game t` to play on T against CT bots. In either competitive profile, both players and bots receive a defuse kit when they spawn. CS2's bomb rules allow CT to defuse.
 
-During warmup, type `ready` or `!ready`, or choose **Match readiness → Mark me as ready**. Use `unready` or `!unready` to clear your marker. Each change is announced in chat with the ready count, and a small panel in the upper left shows your status while alive. Hold **Tab** to see `[READY]` before the names of ready players, or use `!readystatus` for the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
+During warmup, type `ready` or `!ready`, or choose **Match readiness → Mark me as ready**. Use `unready` or `!unready` to clear your marker. Each change is announced in chat with the ready count, and a small HUD line shows your own status and the ready count. Hold **Tab** to see `[READY]` before the names of ready players, or use `!readystatus` for the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
 
 `bot-dm` runs free-for-all Deathmatch with fast respawns. `bot-dm-pistol` uses the same rules with pistols and knives. See [the mode profiles](config/modes/README.md).
 
 Use `!16ct` to play CT against ten T bots, or `!16t` to play T against ten CT bots. The command removes bots from the side you play on and fills the other side. It preserves the current match and warmup state. The challenge counts from the next live round. If the opposing team wins a round or the round is drawn, the match restarts from 0–0. A 16–0 win for the selected side completes the challenge. The challenge also ends on map change.
 
-After each live competitive round, chat shows one line per human participant with the round's kills, deaths, assists, and damage, plus the change in their overall match headshot percentage.
+After each live competitive round, chat shows one line per human participant with kills, deaths, assists, headshot percentage, and damage. The number in parentheses after the round's headshot percentage is how much the match percentage changed. With ten opposing bots, five bot kills or 500 damage meet the green thresholds. A defuse also shows how much time was left on the bomb.
 
 The first startup uses `bot-game`. The selected mode is saved in `data/state/mode`. Changing modes restarts CS2 under Docker, and players must reconnect. To reset the default manually, write `bot-game` to `data/state/mode` and run `docker compose restart cs2`.
 
 Loading a standard map listed in `config/maps.txt` saves it to `data/state/last-map`. The server restores that map after a restart, including after a session on a Workshop map. If the saved map is absent from the list, startup uses `CS2_STARTMAP`. To reset the saved map, remove `data/state/last-map` while the server is stopped.
+
+## Round sounds
+
+At the end of a live round, RepServer plays one clip based on the closest any human player came to killing the entire opposing team. Against ten opponents, ten kills play `ace`, nine play `ace-stealer`, and eight play `acestealelele`.
+
+Each player can install [the sound pack](assets/repserver-round-sounds.zip) by extracting it into their local CS2 `game/csgo` folder. The files should end up in `game/csgo/sounds/repserver`. The original clips are in `assets/sounds`. Rebuild the pack after replacing a clip with `python3 scripts/build-round-sounds.py assets/sounds assets/repserver-round-sounds.zip`.
 
 ## Workshop maps
 
