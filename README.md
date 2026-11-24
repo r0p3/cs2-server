@@ -113,7 +113,48 @@ Loading a standard map listed in `config/maps.txt` saves it to `data/state/last-
 
 At the end of a live round, RepServer plays one clip based on the closest any human player came to killing the entire opposing team. Against ten opponents, ten kills play `ace`, nine play `ace-stealer`, and eight play `acestealelele`.
 
-Each player can install [the sound pack](assets/repserver-round-sounds.zip) by extracting it into their local CS2 `game/csgo` folder. The files should end up in `game/csgo/sounds/repserver`. The original clips are in `assets/sounds`. Rebuild the pack after replacing a clip with `python3 scripts/build-round-sounds.py assets/sounds assets/repserver-round-sounds.zip`.
+### Automatic download
+
+With MultiAddonManager loaded and a published Workshop ID, run this in the **server console** or the admin panel's **Console** tab. Replace `1234567890` with the number after `id=` in the Workshop URL.
+
+```text
+mm_add_client_addon 1234567890
+```
+
+Players who are already connected need to reconnect. Steam delivers the addon to each client. If you specifically want a copy on the **server disk**, run `mm_download_addon 1234567890`. Client playback uses the first command. [MultiAddonManager commands](https://github.com/Source2ZE/MultiAddonManager/blob/main/README.md)
+
+To make the client setting persist across restarts, add the real ID to the server checkout's `.env` and run the update script from that checkout.
+
+```dotenv
+CS2_ROUND_SOUNDS_WORKSHOP_ID=1234567890
+```
+
+```bash
+./scripts/update.sh
+docker compose logs --tail=100 cs2
+```
+
+Look for `Clients will request round sounds from Workshop item` in the logs. In the server console, `meta list` should list MultiAddonManager, and `mm_client_extra_addons` should show the ID. To test the automatic download, reconnect from a client that has only the Workshop copy available, then run `play sounds/repserver/ace.vsnd` in the **player's game console**.
+
+### Publish the sound package once
+
+The [round sounds VPK](assets/workshop/repserver-round-sounds.vpk) is ready to upload. It gets an ID when a Steam account publishes it to the CS2 Workshop. To publish with SteamCMD, create a VDF outside `assets/workshop` with the following contents. Replace the example path with the absolute path to this project's `assets/workshop` folder.
+
+```text
+"workshopitem"
+{
+    "appid" "730"
+    "publishedfileid" "0"
+    "contentfolder" "/absolute/path/to/cs2-server/assets/workshop"
+    "visibility" "3"
+    "title" "RepServer Round Sounds"
+    "description" "Round-end sounds for RepServer."
+}
+```
+
+Log in interactively to SteamCMD with the Steam account that will own the item, then run `workshop_build_item "/absolute/path/to/round-sounds.vdf"`. SteamCMD writes the item ID to `publishedfileid` after publishing. Open the item's Workshop page and accept the Workshop agreement if Steam prompts you. Visibility `3` is unlisted and accessible to anyone with the link. Keep the ID in the VDF when uploading later versions. [SteamCMD Workshop publishing](https://partner.steamgames.com/doc/features/workshop/implementation#SteamCmd) [Workshop visibility](https://partner.steamgames.com/doc/api/ISteamRemoteStorage#ERemoteStoragePublishedFileVisibility)
+
+For local testing, extract the [sound pack](assets/repserver-round-sounds.zip) into CS2's `game/csgo` directory. To update the Workshop VPK after replacing a WAV, run `python3 scripts/build-round-sounds.py assets/sounds assets/workshop/repserver-round-sounds.vpk`.
 
 ## Workshop maps
 

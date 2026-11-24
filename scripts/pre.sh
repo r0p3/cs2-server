@@ -25,6 +25,10 @@ repserver_validate_env() {
         echo "RepServer: CS2_MAXPLAYERS must be a whole number between 2 and 64." >&2
         invalid=1
     fi
+    if [[ -n ${CS2_ROUND_SOUNDS_WORKSHOP_ID:-} && ! $CS2_ROUND_SOUNDS_WORKSHOP_ID =~ ^[1-9][0-9]{0,18}$ ]]; then
+        echo "RepServer: CS2_ROUND_SOUNDS_WORKSHOP_ID must be a numeric Workshop item ID." >&2
+        invalid=1
+    fi
 
     return "$invalid"
 }
@@ -68,6 +72,38 @@ if ! repserver_install; then
     exit 1
 fi
 unset -f repserver_install
+
+repserver_install_round_sounds() {
+    local game_dir="${STEAMAPPDIR}/game/csgo"
+    local plugin=/opt/repserver/multiaddonmanager
+    local loader="$game_dir/addons/metamod/repserver-round-sounds.vdf"
+    local workshop_id=${CS2_ROUND_SOUNDS_WORKSHOP_ID:-}
+
+    if [[ -z $workshop_id ]]; then
+        rm -f -- "$loader"
+        return
+    fi
+
+    if [[ ! -f "$game_dir/addons/metamod/multiaddonmanager.vdf" ]]; then
+        cp -R "$plugin/addons/multiaddonmanager" "$game_dir/addons/" || return 1
+        cp "$plugin/addons/metamod/multiaddonmanager.vdf" "$loader" || return 1
+        if [[ ! -f "$game_dir/cfg/multiaddonmanager/multiaddonmanager.cfg" ]]; then
+            mkdir -p "$game_dir/cfg/multiaddonmanager" || return 1
+            cp "$plugin/cfg/multiaddonmanager/multiaddonmanager.cfg" "$game_dir/cfg/multiaddonmanager/" || return 1
+        fi
+    else
+        rm -f -- "$loader" || return 1
+    fi
+
+    export CS2_ADDITIONAL_ARGS="$CS2_ADDITIONAL_ARGS +mm_add_client_addon $workshop_id"
+    echo "RepServer: Clients will request round sounds from Workshop item $workshop_id."
+}
+
+if ! repserver_install_round_sounds; then
+    echo "RepServer: Could not install MultiAddonManager for round sounds." >&2
+    exit 1
+fi
+unset -f repserver_install_round_sounds
 
 repserver_configure_mode() {
     local cfg_dir="${STEAMAPPDIR}/game/csgo/cfg"
