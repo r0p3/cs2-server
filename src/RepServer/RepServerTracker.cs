@@ -14,18 +14,22 @@ public sealed partial class RepServerPlugin
     private static readonly JsonSerializerOptions TrackerJson = new(JsonSerializerDefaults.Web);
     private static readonly string TrackerDirectory =
         Environment.GetEnvironmentVariable("REPSERVER_TRACKER_STATE") ?? "/var/lib/repserver/tracker";
-    private const int BotKillMilestoneInterval = 1000;
     private const string TenWin = "2v10-win";
     private const string TenSweep = "2v10-16-0";
     private const string MaxBots = "2vmax";
 
-    private sealed class TrackerStats
+    private sealed record TrackerStats
     {
         public required string Name { get; set; }
         public string? Role { get; set; }
         public int Kills { get; set; }
         public int Deaths { get; set; }
+        public int Assists { get; set; }
+        public int Aces { get; set; }
         public int Headshots { get; set; }
+        public int MolotovKills { get; set; }
+        public int GrenadeKills { get; set; }
+        public int PistolKills { get; set; }
         public int BotKills { get; set; }
         public int Clutches { get; set; }
         public int Defuses { get; set; }
@@ -44,6 +48,7 @@ public sealed partial class RepServerPlugin
         public string[] Names { get; set; } = [];
         public int Attempts { get; set; }
         public TrackerBest? Best { get; set; }
+        public TrackerBest? Pending { get; set; }
     }
 
     private sealed class TrackerHistory
@@ -54,10 +59,26 @@ public sealed partial class RepServerPlugin
         public List<TrackerRecord> Records { get; init; } = [];
     }
 
-    private sealed record RoundClient(string Id, string Name, CsTeam Team, bool Bot);
+    private sealed record RoundClient(string Id, string Name, CsTeam Team, bool Bot)
+    {
+        public (string Id, bool Bot) Identity => (Id, Bot);
+    }
+
+    private sealed class RoundEliminations(RoundClient player)
+    {
+        public RoundClient Player { get; } = player;
+        public HashSet<(string Id, bool Bot)> Victims { get; } = new();
+    }
+
     private sealed class TrackerRound
     {
         public Dictionary<int, RoundClient> Alive { get; } = new();
+        public Dictionary<CsTeam, HashSet<(string Id, bool Bot)>> Participants { get; } = new()
+        {
+            [CsTeam.Terrorist] = [],
+            [CsTeam.CounterTerrorist] = []
+        };
+        public Dictionary<(string Id, CsTeam Side), RoundEliminations> Eliminations { get; } = new();
         public Dictionary<string, CsTeam> ClutchCandidates { get; } = new();
         public RoundClient? Planter { get; set; }
         public RoundClient? LastRescuer { get; set; }
@@ -78,12 +99,12 @@ public sealed partial class RepServerPlugin
         public int? LastEngineRound { get; set; }
         public bool Eligible { get; set; } = true;
         public bool Finished { get; set; }
-        public bool SawSurrender { get; set; }
     }
 
     private TrackerHistory trackerHistory = new();
     private TrackerMatch? trackerMatch;
     private TrackerRound? trackerRound;
+    private TrackerRecordKey? announcedRecord;
     private bool trackerOnline;
     private bool trackerDirty;
     private bool trackerSaveEnabled;
@@ -99,6 +120,8 @@ public sealed partial class RepServerPlugin
                 Directory.CreateDirectory(Path.Combine(TrackerDirectory, name));
             trackerHistory = ReadTrackerFile<TrackerHistory>("history.json") ?? new();
             trackerSaveEnabled = true;
+            foreach (var record in trackerHistory.Records)
+                SettleTrackerRecord(record, announce: false);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -140,6 +163,8 @@ public sealed partial class RepServerPlugin
 
     private void ResetTrackerMatch()
     {
+        if (trackerMatch is { Eligible: true, Record: { } record })
+            SettleTrackerRecord(record, announce: trackerOnline);
         trackerMatch = null;
         trackerRound = null;
         trackerRoundOpen = false;
@@ -150,6 +175,7 @@ public sealed partial class RepServerPlugin
     private void StartTrackerMap()
     {
         ResetTrackerMatch();
+        announcedRecord = null;
         trackerOnline = true;
         nextTrackerTick = Server.EngineTime + 1;
     }
@@ -259,7 +285,7 @@ public sealed partial class RepServerPlugin
     {
         if (trackerMatch is { Finished: false, Record: not null } match &&
             (joinsActiveTeam || match.Roster.ContainsKey(slot)))
-            match.Eligible = false;
+            InvalidateTrackerMatch(match);
         trackerRound?.Alive.Remove(slot);
     }
 
@@ -267,18 +293,37 @@ public sealed partial class RepServerPlugin
     {
         if (trackerMatch is not { Eligible: true, Finished: false, Record: not null } match)
             return;
-        match.Eligible = roster.Count == match.Roster.Count && match.Roster.All(entry =>
+        var sameRoster = roster.Count == match.Roster.Count && match.Roster.All(entry =>
             roster.TryGetValue(entry.Key, out var current) && current.Id == entry.Value.Id &&
             current.Team == entry.Value.Team && current.Bot == entry.Value.Bot);
+        if (!sameRoster)
+            InvalidateTrackerMatch(match);
     }
+
+    private void InvalidateTrackerMatch(TrackerMatch match)
+    {
+        match.Eligible = false;
+        if (match.Record?.Pending is not null)
+        {
+            match.Record.Pending = null;
+            trackerDirty = true;
+            FlushTracker();
+        }
+    }
+
+    private static RoundClient[] TrackerDuo(Dictionary<int, RoundClient> roster) =>
+        roster.Values.Where(client => !client.Bot).OrderBy(client => client.Id, StringComparer.Ordinal).ToArray();
+
+    private static bool IsDuoOnOneSide(RoundClient[] players) =>
+        players.Length == 2 && players[0].Team == players[1].Team;
 
     private TrackerRecordKey? CurrentRecordKey(Dictionary<int, RoundClient> roster, out RoundClient[] players,
         out int botCount)
     {
-        players = roster.Values.Where(client => !client.Bot).OrderBy(client => client.Id, StringComparer.Ordinal).ToArray();
+        players = TrackerDuo(roster);
         botCount = roster.Count - players.Length;
         var side = players.FirstOrDefault()?.Team;
-        if (!IsCompetitiveMode || players.Length != 2 || players[0].Team != players[1].Team ||
+        if (!IsCompetitiveMode || !IsDuoOnOneSide(players) ||
             roster.Values.Any(client => client.Bot && client.Team == side) ||
             ConnectedHumans().Any(client => client.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist &&
                 client.AuthorizedSteamID is null) ||
@@ -310,38 +355,50 @@ public sealed partial class RepServerPlugin
         _ => "2vMax"
     };
 
+    private static string TrackerRecordSummary(TrackerRecordKey key, IEnumerable<string> names, TrackerRecord? record)
+    {
+        var best = record?.Best is { } result
+            ? $"Best: {result.RoundsWon}-{result.RoundsLost} vs {result.Bots} bots"
+            : "No completed rounds yet";
+        return $"[Tracker] {RecordLabel(key.Category)} ({key.Side}) | {string.Join(" + ", names)} | {best} | Attempts: {record?.Attempts ?? 0}";
+    }
+
     private void ShowTrackerRecord(CCSPlayerController? player, string[] args, Action<string> reply)
     {
-        var roster = TrackerRoster();
-        var key = CurrentRecordKey(roster, out var players, out _);
-        if (key?.Category == TenWin && trackerMatch is { Eligible: true, Finished: true, Record.Key: var previous } &&
-            previous == key with { Category = TenSweep })
-            key = previous;
-        if (key is null)
+        var filter = args.Length == 1 ? DuoModeCategory(args[0]) : null;
+        if (args.Length != 0 && filter is null)
         {
-            reply(duoMode is not null
-                ? "[Tracker] Records require two players together on the selected side and the full bot roster."
-                : "[Tracker] Records require two players on the same side against 10 or more bots.");
-            return;
-        }
-        if (player is not null && (TrackerClient(player) is not { } client ||
-            client.Id != key.First && client.Id != key.Second))
-        {
-            reply("[Tracker] Join the active duo to see its record in chat.");
+            reply("[Tracker] Use !record for all modes, or !record win, !record 16, or !record max.");
             return;
         }
 
-        var record = trackerHistory.Records.Find(entry => entry.Key == key);
-        var best = record?.Best is { } result
-            ? $"{result.RoundsWon}-{result.RoundsLost} vs {result.Bots} bots"
-            : "No winning result yet";
-        reply($"[Tracker] {RecordLabel(key.Category)} ({key.Side}) | {players[0].Name} + {players[1].Name} | {best} | Attempts: {record?.Attempts ?? 0}");
-        if (record?.Best is { } bestResult)
+        var players = TrackerDuo(TrackerRoster());
+        if (!IsDuoOnOneSide(players))
         {
-            foreach (var stats in bestResult.Players.Values)
+            reply("[Tracker] Join the same side as your duo partner to see your records.");
+            return;
+        }
+        if (player is not null && (TrackerClient(player) is not { } client ||
+            !players.Any(member => member.Id == client.Id)))
+        {
+            reply("[Tracker] Join the active duo to see its records in chat.");
+            return;
+        }
+
+        var map = TrackerMapKey();
+        var side = TeamLabel(players[0].Team);
+        string[] categories = filter is null ? [TenWin, TenSweep, MaxBots] : [filter];
+        foreach (var category in categories)
+        {
+            var key = new TrackerRecordKey(map, category, side, players[0].Id, players[1].Id);
+            var record = trackerHistory.Records.Find(entry => entry.Key == key);
+            reply(TrackerRecordSummary(key, players.Select(client => client.Name), record));
+            if (record?.Best is not { } best)
+                continue;
+            foreach (var stats in best.Players.Values)
             {
                 reply(FormattableString.Invariant(
-                    $"[Tracker] {stats.Name} | K {stats.Kills} / D {stats.Deaths} | HS {stats.Headshots} ({stats.HeadshotPercentage}%) | 1v5+ {stats.Clutches} | Defuses {stats.Defuses}"));
+                    $"[Tracker] {stats.Name} | K {stats.Kills} / D {stats.Deaths} / A {stats.Assists} | HS {stats.Headshots} ({stats.HeadshotPercentage}%) | Aces {stats.Aces} | 1v5+ {stats.Clutches} | Defuses {stats.Defuses}"));
             }
         }
     }
@@ -378,6 +435,11 @@ public sealed partial class RepServerPlugin
                 record.Attempts++;
                 trackerDirty = true;
                 FlushTracker();
+                if (announcedRecord != key)
+                {
+                    announcedRecord = key;
+                    Server.PrintToChatAll(TrackerRecordSummary(key, record.Names, record));
+                }
             }
 
             trackerMatch = new TrackerMatch
@@ -393,7 +455,10 @@ public sealed partial class RepServerPlugin
         {
             // Round start follows the engine's respawn pass. Spawn events also update this roster.
             if (Utilities.GetPlayerFromSlot(entry.Key) is { PawnIsAlive: true })
+            {
                 trackerRound.Alive.Add(entry.Key, entry.Value);
+                trackerRound.Participants[entry.Value.Team].Add(entry.Value.Identity);
+            }
         }
         if (IsCompetitiveMode)
         {
@@ -412,6 +477,7 @@ public sealed partial class RepServerPlugin
         if (trackerRound is not null && IsLiveGame() && spawn.Userid is { } player && TrackerClient(player) is { } client)
         {
             trackerRound.Alive[player.Slot] = client;
+            trackerRound.Participants[client.Team].Add(client.Identity);
             if (!client.Bot && IsCompetitiveMode)
             {
                 var round = trackerRound;
@@ -446,24 +512,35 @@ public sealed partial class RepServerPlugin
         var attacker = TrackerClient(death.Attacker);
         if (attacker is not null && (attacker.Team != victim.Team || !IsCompetitiveMode && death.Attacker?.Slot != death.Userid?.Slot))
         {
+            var weapon = ClassifyKillWeapon(death.Weapon ?? "");
             UpdateTrackerStats(attacker, stats =>
             {
                 stats.Kills++;
                 if (death.Headshot)
                     stats.Headshots++;
-                if (!attacker.Bot && victim.Bot)
-                    stats.BotKills++;
+                if (!attacker.Bot)
+                {
+                    if (victim.Bot)
+                        stats.BotKills++;
+                    CountWeaponKill(stats, weapon);
+                }
             });
-            if (!attacker.Bot && victim.Bot && trackerHistory.Players[attacker.Id].BotKills is var kills &&
-                (kills is 10 or 25 or 50 or 100 or 250 or 500 || kills % BotKillMilestoneInterval == 0))
+
+            if (TrackerClient(death.Assister) is { Bot: false } assister &&
+                assister.Identity != attacker.Identity && assister.Identity != victim.Identity &&
+                (!IsCompetitiveMode || assister.Team == attacker.Team))
+                UpdateTrackerStats(assister, stats => stats.Assists++);
+
+            if (!attacker.Bot)
             {
-                FlushTracker();
-                Server.PrintToChatAll(FormattableString.Invariant(
-                    $"[Tracker] {attacker.Name} just killed bot #{kills:N0}. {victim.Name} had the honor!"));
+                if (IsCompetitiveMode && trackerRound is { } activeRound)
+                    TrackAceKill(activeRound, attacker, victim);
+                AnnounceKillMilestones(attacker, victim, weapon);
             }
         }
         if (trackerRound is { } round && death.Userid is { } player)
         {
+            round.Participants[victim.Team].Add(victim.Identity);
             round.Alive.Remove(player.Slot);
             if (attacker is { Bot: true } && !victim.Bot && attacker.Team != victim.Team &&
                 !round.Alive.Values.Any(client => client.Team == victim.Team))
@@ -472,6 +549,26 @@ public sealed partial class RepServerPlugin
         }
 
         return HookResult.Continue;
+    }
+
+    private static void TrackAceKill(TrackerRound round, RoundClient attacker, RoundClient victim)
+    {
+        var key = (attacker.Id, attacker.Team);
+        if (!round.Eliminations.TryGetValue(key, out var eliminations))
+            round.Eliminations.Add(key, eliminations = new RoundEliminations(attacker));
+        eliminations.Victims.Add(victim.Identity);
+    }
+
+    private void CreditRoundAces(TrackerRound round)
+    {
+        var credited = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var eliminations in round.Eliminations.Values)
+        {
+            var opponent = eliminations.Player.Team == CsTeam.Terrorist ? CsTeam.CounterTerrorist : CsTeam.Terrorist;
+            var team = round.Participants[opponent];
+            if (team.Count > 0 && team.IsSubsetOf(eliminations.Victims) && credited.Add(eliminations.Player.Id))
+                UpdateTrackerStats(eliminations.Player, stats => stats.Aces++);
+        }
     }
 
     private static void CaptureClutchCandidates(TrackerRound round)
@@ -530,7 +627,8 @@ public sealed partial class RepServerPlugin
             trackerRoundOpen = false;
             ValidateTrackerRoster(TrackerRoster());
             var surrender = reason is RoundEndReason.CTsSurrender or RoundEndReason.TerroristsSurrender;
-            match.SawSurrender |= surrender;
+            if (!surrender)
+                CreditRoundAces(round);
             if (winner is CsTeam.Terrorist or CsTeam.CounterTerrorist && !surrender)
             {
                 foreach (var survivor in round.Alive.Values.Where(client => !client.Bot && client.Team == winner &&
@@ -546,8 +644,10 @@ public sealed partial class RepServerPlugin
                 else
                     match.CtRounds++;
             }
+            if (!surrender && (winner is CsTeam.Terrorist or CsTeam.CounterTerrorist || reason == RoundEndReason.RoundDraw))
+                StageTrackerResult(match);
             if (challenge && (winner != sweepSide || surrender))
-                match.Finished = true;
+                CompleteTrackerMatch(match);
             FlushTracker();
         });
     }
@@ -575,23 +675,49 @@ public sealed partial class RepServerPlugin
             if (trackerMatch != match || match.Finished || !IsLiveGame())
                 return;
             ValidateTrackerRoster(TrackerRoster());
-            match.Finished = true;
-            if (!match.Eligible || match.SawSurrender || match.Record is not { } record)
-                return;
-            var won = match.Side == CsTeam.Terrorist ? match.TRounds : match.CtRounds;
-            var lost = match.Side == CsTeam.Terrorist ? match.CtRounds : match.TRounds;
-            if (won <= lost || (record.Key.Category == TenSweep && (won != 16 || lost != 0)))
-                return;
-            if (record.Best is { } old &&
-                (old.Bots, old.RoundsWon - old.RoundsLost, -old.RoundsLost).CompareTo(
-                    (match.BotCount, won - lost, -lost)) >= 0)
-                return;
-            var players = match.Roster.Values.Where(client => !client.Bot).ToDictionary(client => client.Id,
-                client => match.Players.GetValueOrDefault(client.Id) ?? new TrackerStats { Name = client.Name });
-            record.Best = new TrackerBest(match.BotCount, won, lost, DateTimeOffset.UtcNow, players);
-            trackerDirty = true;
+            CompleteTrackerMatch(match);
             FlushTracker();
-            Server.PrintToChatAll($"[Tracker] New record! {string.Join(" + ", record.Names)} | {RecordLabel(record.Key.Category)} ({record.Key.Side}) | {won}-{lost} vs {match.BotCount} bots");
         }));
+    }
+
+    private void StageTrackerResult(TrackerMatch match)
+    {
+        if (!match.Eligible || match.Record is not { } record)
+            return;
+        var won = match.Side == CsTeam.Terrorist ? match.TRounds : match.CtRounds;
+        var lost = match.Side == CsTeam.Terrorist ? match.CtRounds : match.TRounds;
+        var players = match.Roster.Values.Where(client => !client.Bot).ToDictionary(client => client.Id,
+            client => match.Players.TryGetValue(client.Id, out var stats)
+                ? stats with { }
+                : new TrackerStats { Name = client.Name });
+        record.Pending = new TrackerBest(match.BotCount, won, lost, DateTimeOffset.UtcNow, players);
+        trackerDirty = true;
+    }
+
+    private void CompleteTrackerMatch(TrackerMatch match)
+    {
+        match.Finished = true;
+        if (match.Eligible && match.Record is { } record)
+            SettleTrackerRecord(record, announce: true);
+    }
+
+    private void SettleTrackerRecord(TrackerRecord record, bool announce)
+    {
+        if (record.Pending is not { } result)
+            return;
+        record.Pending = null;
+        trackerDirty = true;
+
+        static (int Wins, int Bots, int FewerLosses) Rank(TrackerBest attempt) =>
+            (attempt.RoundsWon, attempt.Bots, -attempt.RoundsLost);
+
+        if (record.Best is { } best && Rank(best).CompareTo(Rank(result)) >= 0)
+            return;
+        record.Best = result;
+        if (announce)
+        {
+            Server.PrintToChatAll(
+                $"[Tracker] New record! {string.Join(" + ", record.Names)} | {RecordLabel(record.Key.Category)} ({record.Key.Side}) | {result.RoundsWon}-{result.RoundsLost} vs {result.Bots} bots");
+        }
     }
 }

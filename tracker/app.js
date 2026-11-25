@@ -63,10 +63,11 @@ function stats(row = {}) {
 }
 
 function playerCells(player) {
-  return [player.name, ...stats(player), number.format(player.clutches ?? 0), number.format(player.defuses ?? 0)];
+  return [player.name, ...stats(player), number.format(player.assists ?? 0), number.format(player.aces ?? 0),
+    number.format(player.clutches ?? 0), number.format(player.defuses ?? 0)];
 }
 
-const playerHeaders = ['Player', 'Kills', 'Deaths', 'HS', 'HS %', '1v5+ Clutches', 'Defuses'];
+const playerHeaders = ['Player', 'Kills', 'Deaths', 'HS', 'HS %', 'Assists', 'Aces', '1v5+ Clutches', 'Defuses'];
 
 function mapLabel(key) {
   return (data.live.maps ?? []).find(map => map.key === key)?.label ?? key;
@@ -169,14 +170,13 @@ function recordPage() {
     (!filters.duo || duoKey(record) === filters.duo));
   visible.sort((a, b) => mapLabel(a.key.map).localeCompare(mapLabel(b.key.map), 'en') ||
     a.key.category.localeCompare(b.key.category, 'en') ||
+    (b.best?.roundsWon ?? -1) - (a.best?.roundsWon ?? -1) ||
     (b.best?.bots ?? 0) - (a.best?.bots ?? 0) ||
-    ((b.best?.roundsWon ?? 0) - (b.best?.roundsLost ?? 0)) -
-      ((a.best?.roundsWon ?? 0) - (a.best?.roundsLost ?? 0)) ||
     (a.best?.roundsLost ?? 0) - (b.best?.roundsLost ?? 0) ||
     a.names.join(' + ').localeCompare(b.names.join(' + '), 'en'));
   const cards = visible.map(record => {
     const best = record.best;
-    const result = best ? best.roundsWon + '–' + best.roundsLost + ' vs ' + best.bots + ' bots' : 'No winning result';
+    const result = best ? best.roundsWon + '–' + best.roundsLost + ' vs ' + best.bots + ' bots' : 'No completed rounds';
     return el('article', { class: 'panel' }, el('div', { class: 'panel-body' },
       el('div', { class: 'record-title' }, el('h2', {}, record.names.join(' + ')), el('span', { class: 'record-score' }, result)),
       el('p', { class: 'record-line' }, [mapLabel(record.key.map), categories[record.key.category],

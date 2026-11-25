@@ -272,7 +272,9 @@ public sealed partial class RepServerPlugin : BasePlugin
             SetReady(player, reply, true));
         RegisterChatCommand("unready", "Clear your ready status", (player, _, reply) =>
             SetReady(player, reply, false));
-        RegisterChatCommand("record", "Show your duo's record for the current map and challenge", ShowTrackerRecord);
+        RegisterChatCommand("stats", "Show your lifetime stats", ShowLifetimeStats);
+        RegisterChatCommand("milestone", "Show your kill milestone progress", ShowKillMilestones);
+        RegisterChatCommand("record", "Show your duo's records on this map", ShowTrackerRecord, arguments: "[win|16|max]");
         RegisterChatCommand("autobuy", "Save equipped gear or turn autobuy on or off", SaveAutobuy, arguments: "[on|off]");
         RegisterChatCommand("trackeradmin", "Get a personal link to the web admin panel", OpenTrackerAdmin, admin: true);
         RegisterChatCommand("readystatus", "Show which players are ready", (_, _, reply) =>
@@ -390,8 +392,13 @@ public sealed partial class RepServerPlugin : BasePlugin
         challengeRestartPending = false;
         challengeRoundActive = false;
         challengeSide = side;
-        if (trackerMatch is { } match)
-            match.Eligible = false;
+        announcedRecord = null;
+        if (trackerMatch is { Eligible: true, Record: { } record } match)
+        {
+            SettleTrackerRecord(record, announce: true);
+            InvalidateTrackerMatch(match);
+            FlushTracker();
+        }
         autoRosterPending = false;
         CancelBotFill();
         var botTeam = side == CsTeam.CounterTerrorist ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
@@ -499,13 +506,7 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void ChangeMode(CCSPlayerController? player, string[] args, Action<string> reply)
     {
-        var category = args.FirstOrDefault()?.ToLowerInvariant() switch
-        {
-            "win" or "2v10" or TenWin => TenWin,
-            "16" or TenSweep => TenSweep,
-            "max" or MaxBots => MaxBots,
-            _ => null
-        };
+        var category = DuoModeCategory(args.FirstOrDefault());
         if (category is not null)
         {
             var side = args.Length switch

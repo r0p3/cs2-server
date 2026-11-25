@@ -17,6 +17,14 @@ public sealed partial class RepServerPlugin
     private DuoMode? duoMode;
     private int? duoBotTarget;
 
+    private static string? DuoModeCategory(string? name) => name?.ToLowerInvariant() switch
+    {
+        "win" or "2v10" or TenWin => TenWin,
+        "16" or TenSweep => TenSweep,
+        "max" or MaxBots => MaxBots,
+        _ => null
+    };
+
     private static DuoMode? ReadDuoMode(string mode)
     {
         var separator = mode.LastIndexOf('-');
@@ -52,6 +60,7 @@ public sealed partial class RepServerPlugin
         }
 
         duoMode = mode;
+        announcedRecord = null;
         activeMode = mode.Key;
         Environment.SetEnvironmentVariable("REPSERVER_ACTIVE_MODE", activeMode);
         var message = $"[RepServer] Setting up {mode.Label}. Join {TeamLabel(mode.Side)} and ready up after bot fill.";
@@ -70,8 +79,7 @@ public sealed partial class RepServerPlugin
         {
             CancelBotFill();
             StopChallenge();
-            if (trackerMatch is { } match)
-                match.Eligible = false;
+            ResetTrackerMatch();
             duoBotTarget = null;
             botFillTimer = AddTimer(BotFillInterval, StartDuoRosterWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
             return;
@@ -111,8 +119,7 @@ public sealed partial class RepServerPlugin
         autoRosterPending = false;
         CancelBotFill();
         StopChallenge();
-        if (trackerMatch is { } match)
-            match.Eligible = false;
+        ResetTrackerMatch();
 
         duoBotTarget = mode.Category == MaxBots ? MaximumDuoBots(mode.BotSide, rules) : InitialBotCount;
         if (duoBotTarget <= 0)
