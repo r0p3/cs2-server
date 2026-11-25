@@ -14,13 +14,14 @@ namespace RepServer;
 public sealed partial class RepServerPlugin : BasePlugin
 {
     public override string ModuleName => "RepServer";
-    public override string ModuleVersion => "0.4.17";
+    public override string ModuleVersion => "0.5.0";
 
     private const string AdminFile = "/var/lib/repserver/admins.txt";
     private const string ModeFile = "/var/lib/repserver/mode";
     private const string LastMapFile = "/var/lib/repserver/last-map";
     private const string Modes = "bot-game, bot-dm, bot-dm-pistol";
-    private bool IsCompetitiveMode => activeMode is "bot-game" or "bot-game-t";
+    private static bool IsLiveGame() => Utilities.GetGameRules() is { WarmupPeriod: false };
+    private bool IsCompetitiveMode => activeMode is "bot-game" or "bot-game-t" || duoMode is not null;
     private delegate void RepCommand(CCSPlayerController? player, string[] args, Action<string> reply);
     private readonly Dictionary<string, RepCommand> chatCommands = new(StringComparer.OrdinalIgnoreCase);
     private const string BotTeamSettings = "bot_auto_vacate 1; mp_autoteambalance 0; mp_limitteams 0";
@@ -62,6 +63,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     public override void Load(bool hotReload)
     {
         activeMode = Environment.GetEnvironmentVariable("REPSERVER_ACTIVE_MODE") ?? "bot-game";
+        duoMode = ReadDuoMode(activeMode);
         if (activeMode == "bot-dm-pistol")
         {
             RegisterEventHandler<EventPlayerSpawn>((@event, _) => StripNonPistols(@event.Userid));
@@ -95,6 +97,7 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         LoadBotProfiles();
         LoadBotPriorities();
+        LoadTracker(hotReload);
 
         RegisterListener<Listeners.OnMapStart>(map =>
         {
@@ -110,11 +113,16 @@ public sealed partial class RepServerPlugin : BasePlugin
             ResetReadyPlayers();
             nextReadyHudUpdate = 0;
             roundStats = null;
+            StartTrackerMap();
             RememberMap(map);
+            duoBotTarget = null;
+            if (duoMode is not null)
+                botFillTimer = AddTimer(JoinGracePeriod, StartDuoRosterWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
         });
         RegisterListener<Listeners.OnMapEnd>(() =>
         {
             StopChallenge();
+            StopTracker();
             ResetReadyPlayers();
             roundStats = null;
         });
@@ -122,6 +130,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterListener<Listeners.OnClientDisconnect>(slot =>
         {
             connectingClients.Remove(slot);
+            TrackerClientLeft(slot);
             ClearReadyPlayer(slot);
             QueueReadyCheck();
             if (managedBotSlots.Remove(slot, out var botName))
@@ -137,8 +146,10 @@ public sealed partial class RepServerPlugin : BasePlugin
         });
         if (hotReload)
         {
-            autoRosterPending = false;
+            autoRosterPending = duoMode is not null;
             RememberMap(Server.MapName);
+            if (duoMode is not null)
+                botFillTimer = AddTimer(JoinGracePeriod, StartDuoRosterWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
         }
 
         RegisterListener<Listeners.OnClientPutInServer>(slot => Server.NextWorldUpdate(() =>
@@ -159,6 +170,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterMenuListeners();
         RegisterEventHandler<EventRoundEnd>((round, _) =>
         {
+            QueueTrackerRoundEnd(round);
             QueueRoundStats(round);
             return OnChallengeRoundEnd(round);
         });
@@ -169,7 +181,11 @@ public sealed partial class RepServerPlugin : BasePlugin
             RegisterEventHandler<EventBombPlanted>(TrackBombPlant);
             RegisterEventHandler<EventBombDefused>(TrackBombDefuse, HookMode.Pre);
         }
-        RegisterEventHandler<EventCsWinPanelMatch>((_, _) => OnChallengeMatchEnd());
+        RegisterEventHandler<EventCsWinPanelMatch>((_, _) =>
+        {
+            FinishTrackerMatch();
+            return OnChallengeMatchEnd();
+        });
         RegisterEventHandler<EventPlayerConnect>((connection, info) =>
         {
             if (connection.Bot)
@@ -178,6 +194,11 @@ public sealed partial class RepServerPlugin : BasePlugin
         }, HookMode.Pre);
         RegisterEventHandler<EventPlayerTeam>((change, _) =>
         {
+            if (change.Userid is { IsValid: true } changed && change.Team != change.Oldteam)
+            {
+                TrackerClientLeft(changed.Slot, change.Team is (int)CsTeam.Terrorist or (int)CsTeam.CounterTerrorist);
+                QueueReadyCheck();
+            }
             if (change.Userid is { IsValid: true, IsBot: true, IsHLTV: false })
                 change.Silent = true;
             return HookResult.Continue;
@@ -191,11 +212,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         }, HookMode.Pre);
         RegisterEventHandler<EventRoundStart>((_, _) =>
         {
-            var liveRound = Utilities.GetGameRules() is { WarmupPeriod: false };
+            var liveRound = IsLiveGame();
             if (challengeRetryTimer is null)
                 challengeRestartPending = false;
             challengeRoundActive = restoreChallengeRules is not null && liveRound;
             BeginRoundStats(liveRound);
+            BeginTrackerRound(liveRound);
             if (readyPlayers.Count != 0)
                 IsReadinessWarmup();
             return HookResult.Continue;
@@ -242,15 +264,21 @@ public sealed partial class RepServerPlugin : BasePlugin
         RegisterChatCommand("status", "Show the plugin version, map and game mode", (_, _, reply) =>
             reply($"[RepServer] v{ModuleVersion} | map: {Server.MapName} | mode: {ModeLabel(activeMode)}"));
         RegisterChatCommand("modes", "List game modes", (_, _, reply) =>
-            reply($"[RepServer] {Modes}. Use bot-game t to play as T."));
+        {
+            reply($"[RepServer] {Modes}. Use bot-game t to play as T.");
+            reply("[RepServer] Duo modes: !mode win, !mode 16, !mode max. Add t or ct to choose your side.");
+        });
         RegisterChatCommand("ready", "Mark yourself ready during warmup", (player, _, reply) =>
             SetReady(player, reply, true));
         RegisterChatCommand("unready", "Clear your ready status", (player, _, reply) =>
             SetReady(player, reply, false));
+        RegisterChatCommand("record", "Show your duo's record for the current map and challenge", ShowTrackerRecord);
+        RegisterChatCommand("autobuy", "Save equipped gear or turn autobuy on or off", SaveAutobuy, arguments: "[on|off]");
+        RegisterChatCommand("trackeradmin", "Get a personal link to the web admin panel", OpenTrackerAdmin, admin: true);
         RegisterChatCommand("readystatus", "Show which players are ready", (_, _, reply) =>
             ShowReadyStatus(reply));
-        RegisterChatCommand("change-mode", "Change game mode", ChangeMode, admin: true, arguments: "<mode>");
-        RegisterChatCommand("mode", "Alias for !change-mode", ChangeMode, admin: true, arguments: "<mode>");
+        RegisterChatCommand("change-mode", "Change game mode", ChangeMode, admin: true, arguments: "<mode> [t|ct]");
+        RegisterChatCommand("mode", "Choose a game mode or set up a duo match", ChangeMode, admin: true, arguments: "<mode> [t|ct]");
         RegisterChatCommand("map", "Change map (standard maps require admin)", ChangeMap, arguments: "<name>");
         RegisterChatCommand("add_map", "Save a Workshop map with an optional alias",
             (player, args, reply) => AddWorkshopMap(player, string.Join(' ', args), reply),
@@ -329,15 +357,20 @@ public sealed partial class RepServerPlugin : BasePlugin
         Console.WriteLine($"[RepServer] v{ModuleVersion} loaded | mode: {ModeLabel(activeMode)}");
     }
 
-    private static string ModeLabel(string mode) => mode switch
+    private static string ModeLabel(string mode) => ReadDuoMode(mode)?.Label ?? (mode switch
     {
         "bot-game" => "bot-game (bots on T)",
         "bot-game-t" => "bot-game (bots on CT)",
         _ => mode
-    };
+    });
 
     private void SetChallenge(CCSPlayerController? player, Action<string> reply, CsTeam side)
     {
+        if (duoMode is not null)
+        {
+            SelectDuoMode(player, reply, new(TenSweep, side));
+            return;
+        }
         if (!CheckAdmin(player, reply))
             return;
         if (!IsCompetitiveMode || pendingMode is not null || Utilities.GetGameRules() is null)
@@ -357,10 +390,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         challengeRestartPending = false;
         challengeRoundActive = false;
         challengeSide = side;
+        if (trackerMatch is { } match)
+            match.Eligible = false;
         autoRosterPending = false;
         CancelBotFill();
         var botTeam = side == CsTeam.CounterTerrorist ? CsTeam.Terrorist : CsTeam.CounterTerrorist;
-        StartBotFill(null, botTeam, InitialBotCount, prepareChallengeRoster: true);
+        StartBotFill(null, botTeam, InitialBotCount, prepareRoster: true);
 
         var message = $"[RepServer] {TeamLabel(side)} 16-0 challenge set up. Join {TeamLabel(side)} to play against {InitialBotCount} {TeamLabel(botTeam)} bots.";
         if (player is null)
@@ -405,7 +440,7 @@ public sealed partial class RepServerPlugin : BasePlugin
     private HookResult OnChallengeRoundEnd(EventRoundEnd round)
     {
         var reason = (RoundEndReason)round.Reason;
-        if (!challengeRoundActive || Utilities.GetGameRules() is not { WarmupPeriod: false } ||
+        if (!challengeRoundActive || !IsLiveGame() ||
             reason == RoundEndReason.GameCommencing)
             return HookResult.Continue;
 
@@ -421,7 +456,7 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private HookResult OnChallengeMatchEnd()
     {
-        if (!challengeRoundActive || challengeRestartPending || pendingMode is not null)
+        if (!challengeRoundActive || !IsLiveGame() || challengeRestartPending || pendingMode is not null)
             return HookResult.Continue;
 
         var teams = Utilities.FindAllEntitiesByDesignerName<CCSTeam>("cs_team_manager").ToArray();
@@ -433,7 +468,10 @@ public sealed partial class RepServerPlugin : BasePlugin
             if (side.Score == 16 && opponent.Score == 0)
             {
                 Server.PrintToChatAll($"[RepServer] Challenge complete. {TeamLabel(challengeSide)} won 16-0!");
-                StopChallenge();
+                if (duoMode?.Category == TenSweep)
+                    challengeRoundActive = false;
+                else
+                    StopChallenge();
             }
             else
             {
@@ -461,6 +499,30 @@ public sealed partial class RepServerPlugin : BasePlugin
 
     private void ChangeMode(CCSPlayerController? player, string[] args, Action<string> reply)
     {
+        var category = args.FirstOrDefault()?.ToLowerInvariant() switch
+        {
+            "win" or "2v10" or TenWin => TenWin,
+            "16" or TenSweep => TenSweep,
+            "max" or MaxBots => MaxBots,
+            _ => null
+        };
+        if (category is not null)
+        {
+            var side = args.Length switch
+            {
+                1 when player?.Team is CsTeam.Terrorist or CsTeam.CounterTerrorist => player.Team,
+                1 => duoMode?.Side ?? (activeMode == "bot-game-t" ? CsTeam.Terrorist : CsTeam.CounterTerrorist),
+                2 when args[1].Equals("t", StringComparison.OrdinalIgnoreCase) => CsTeam.Terrorist,
+                2 when args[1].Equals("ct", StringComparison.OrdinalIgnoreCase) => CsTeam.CounterTerrorist,
+                _ => CsTeam.None
+            };
+            if (side == CsTeam.None)
+                reply("[RepServer] Use !mode win, !mode 16, or !mode max. Add t or ct to choose your side.");
+            else
+                SelectDuoMode(player, reply, new(category, side));
+            return;
+        }
+
         var requested = args.Length == 1 ? args[0].ToLowerInvariant() : null;
         if (args.Length == 2 && args[0].Equals("bot-game", StringComparison.OrdinalIgnoreCase))
         {
@@ -482,20 +544,30 @@ public sealed partial class RepServerPlugin : BasePlugin
 
         if (requested is not ("bot-game" or "bot-game-t" or "bot-dm" or "bot-dm-pistol"))
         {
-            reply($"[RepServer] !mode <mode>. Choose {Modes}. In bot-game, you can add t or ct.");
+            reply($"[RepServer] !mode <mode>. Choose win, 16, max, or {Modes}.");
             return;
         }
-        if (pendingMode is not null)
-        {
-            reply($"[RepServer] A switch to {ModeLabel(pendingMode)} is already in progress.");
+        if (CheckModeSwitchPending(reply))
             return;
-        }
         if (requested == activeMode)
         {
             reply($"[RepServer] {ModeLabel(activeMode)} is already active.");
             return;
         }
 
+        RestartIntoMode(player, reply, requested);
+    }
+
+    private bool CheckModeSwitchPending(Action<string> reply)
+    {
+        if (pendingMode is null)
+            return false;
+        reply($"[RepServer] A switch to {ModeLabel(pendingMode)} is already in progress.");
+        return true;
+    }
+
+    private void RestartIntoMode(CCSPlayerController? player, Action<string> reply, string requested)
+    {
         if (!TrySaveState(ModeFile, requested))
         {
             reply("[RepServer] Could not save the mode. Check data/state on the server.");
@@ -776,8 +848,9 @@ public sealed partial class RepServerPlugin : BasePlugin
             return;
 
         autoRosterPending = false;
-        botFillRequesterSlot = player.Slot;
-        botFillTimer = AddTimer(JoinGracePeriod, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
+        botFillRequesterSlot = duoMode is null ? player.Slot : null;
+        botFillTimer = AddTimer(JoinGracePeriod, duoMode is null ? StartInitialFillWhenReady : StartDuoRosterWhenReady,
+            TimerFlags.STOP_ON_MAPCHANGE);
     }
 
     private bool HasConnectingHumans() => connectingClients.Any(slot =>
@@ -795,7 +868,7 @@ public sealed partial class RepServerPlugin : BasePlugin
             botFillRequesterSlot = null;
             return;
         }
-        if (!CanSpawnBots() || !humans.Any(client => (CsTeam)client.TeamNum is CsTeam.Terrorist or CsTeam.CounterTerrorist))
+        if (!CanSpawnBots() || !humans.Any(IsOnPlayingTeam))
         {
             botFillTimer = AddTimer(BotFillInterval, StartInitialFillWhenReady, TimerFlags.STOP_ON_MAPCHANGE);
             return;
@@ -805,7 +878,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         StartBotFill(requester, team, InitialBotCount);
     }
 
-    private void StartBotFill(CCSPlayerController? player, CsTeam team, int target, bool prepareChallengeRoster = false)
+    private void StartBotFill(CCSPlayerController? player, CsTeam team, int target, bool prepareRoster = false)
     {
         unexpectedBotBurst = 0;
         lastUnexpectedBotAt = double.NegativeInfinity;
@@ -816,7 +889,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         // CS2 must finish the chat packet before it creates a bot.
         botFillTimer = AddTimer(0.1f, () =>
         {
-            if (prepareChallengeRoster && PrepareChallengeRoster(team, target))
+            if (prepareRoster && PrepareBotRoster(team, target))
             {
                 botFillTimer = AddTimer(BotFillInterval, () => CheckBotFill(team, target, rejectedNames),
                     TimerFlags.STOP_ON_MAPCHANGE);
@@ -826,7 +899,7 @@ public sealed partial class RepServerPlugin : BasePlugin
         }, TimerFlags.STOP_ON_MAPCHANGE);
     }
 
-    private bool PrepareChallengeRoster(CsTeam team, int target)
+    private bool PrepareBotRoster(CsTeam team, int target)
     {
         var bots = CurrentBots();
         foreach (var bot in bots)
@@ -995,6 +1068,8 @@ public sealed partial class RepServerPlugin : BasePlugin
         botFillRequesterSlot = null;
         Console.WriteLine("[RepServer] " + message);
         Server.PrintToChatAll("[RepServer] " + message);
+        if (duoMode is not null)
+            QueueReadyCheck();
     }
 
     private void StartMatch(CCSPlayerController? player, Action<string> reply)
@@ -1005,6 +1080,12 @@ public sealed partial class RepServerPlugin : BasePlugin
         if (!IsCompetitiveMode)
         {
             reply("[RepServer] Use !live in a competitive mode.");
+            return;
+        }
+
+        if (DuoRosterIssue() is { } issue)
+        {
+            reply("[RepServer] " + issue);
             return;
         }
 

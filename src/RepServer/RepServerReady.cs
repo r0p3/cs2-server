@@ -175,7 +175,7 @@ public sealed partial class RepServerPlugin
         Server.NextWorldUpdate(() =>
         {
             readyCheckQueued = false;
-            if (HasConnectingHumans() || !IsReadinessWarmup())
+            if (HasConnectingHumans() || !IsReadinessWarmup() || DuoRosterIssue() is not null)
                 return;
 
             var humans = ConnectedHumans();

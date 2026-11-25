@@ -116,9 +116,12 @@ repserver_configure_mode() {
     fi
 
     case "$REPSERVER_ACTIVE_MODE" in
-        bot-game|bot-game-t)
+        bot-game|2v10-win-ct|2v10-16-0-ct|2vmax-ct)
             CS2_GAMEALIAS=competitive
-            [[ "$REPSERVER_ACTIVE_MODE" != bot-game-t ]] || competitive=bot_game_t
+            ;;
+        bot-game-t|2v10-win-t|2v10-16-0-t|2vmax-t)
+            CS2_GAMEALIAS=competitive
+            competitive=bot_game_t
             ;;
         bot-dm|bot-dm-pistol)
             CS2_GAMEALIAS=deathmatch

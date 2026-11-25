@@ -41,6 +41,7 @@ public sealed partial class RepServerPlugin
     public override void Unload(bool hotReload)
     {
         workshopLifetime.Cancel();
+        StopTracker();
         StopChallenge();
         ResetReadyPlayers();
         roundStats = null;
@@ -138,7 +139,10 @@ public sealed partial class RepServerPlugin
         var options = new[] { "bot-game", "bot-game-t", "bot-dm", "bot-dm-pistol" }.Select(mode =>
             new MenuOption(ModeLabel(mode), client => OpenMenu(client, "Change mode and restart the server?",
                 [new("Confirm", confirmed => CompleteMenuAction(confirmed,
-                    () => SelectMode(confirmed, confirmed.PrintToChat, mode)))], OpenModeMenu))).ToArray();
+                    () => SelectMode(confirmed, confirmed.PrintToChat, mode)))], OpenModeMenu)))
+            .Concat(new[] { ("win", TenWin), ("16", TenSweep), ("max", MaxBots) }.Select(preset =>
+                new MenuOption(RecordLabel(preset.Item2), client => CompleteMenuAction(client,
+                    () => ChangeMode(client, [preset.Item1], client.PrintToChat))))).ToArray();
         OpenMenu(player, "Select game mode", options, OpenMainMenu);
     }
 

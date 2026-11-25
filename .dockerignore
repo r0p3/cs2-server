@@ -18,3 +18,11 @@ src/**
 src/RepServer/**
 !src/RepServer/*.cs
 !src/RepServer/*.csproj
+!config/autobuy.json
+!tracker/
+tracker/**
+!tracker/Dockerfile
+!tracker/server.py
+!tracker/index.html
+!tracker/style.css
+!tracker/app.js

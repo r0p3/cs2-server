@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#11151c">
+  <meta name="description" content="Live RepServer matches, player stats, map records and the Bot Hall of Fame.">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/app.js"></script>
+  <title>RepServer Tracker</title>
+</head>
+<body>
+  <header class="site-header">
+    <div class="shell topbar">
+      <a class="brand" href="#live"><span class="brand-mark" aria-hidden="true">R</span> RepServer <span class="brand-sub">Tracker</span></a>
+      <span id="connection" class="connection"><span class="dot"></span><span>Connecting</span></span>
+    </div>
+  </header>
+  <div class="shell">
+    <nav id="navigation" aria-label="Tracker sections">
+      <a href="#live">Live Match</a>
+      <a href="#players">Players</a>
+      <a href="#bots">Bot Hall of Fame</a>
+      <a href="#records">Map Records</a>
+      <a href="#admin">Admin</a>
+    </nav>
+    <main id="view" tabindex="-1"></main>
+    <footer><span>RepServer Tracker</span><span id="updated"></span></footer>
+  </div>
+</body>
+</html>

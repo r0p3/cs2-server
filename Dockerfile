@@ -32,7 +32,7 @@ RUN python3 /build/build-bot-profile.py /build/bot-names.txt /bundle/botprofile.
 
 FROM upstream
 COPY --from=build /bundle/ /opt/repserver/
-COPY config/maps.txt /opt/repserver/maps.txt
+COPY config/maps.txt config/autobuy.json /opt/repserver/
 COPY config/bot-names.txt /opt/repserver/bot-names.txt
 COPY config/bot-priority.txt /opt/repserver/bot-priority.txt
 COPY config/modes/*.cfg /opt/repserver/modes/

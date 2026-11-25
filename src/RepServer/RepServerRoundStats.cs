@@ -95,7 +95,7 @@ public sealed partial class RepServerPlugin
 
     private HookResult TrackRoundDeath(EventPlayerDeath death, GameEventInfo _)
     {
-        if (roundStats is null)
+        if (roundStats is null || !IsLiveGame())
             return HookResult.Continue;
 
         var victim = death.Userid;
@@ -130,12 +130,12 @@ public sealed partial class RepServerPlugin
 
     private HookResult TrackBombPlant(EventBombPlanted _, GameEventInfo info)
     {
-        if (roundStats is { } round)
+        if (roundStats is { } round && IsLiveGame())
         {
             // The planted entity may finish initializing after bomb_planted.
             Server.NextWorldUpdate(() =>
             {
-                if (roundStats == round)
+                if (roundStats == round && IsLiveGame())
                     round.BombDetonationTime = FindPlantedBomb(tickingOnly: true)?.C4Blow;
             });
         }
@@ -144,7 +144,7 @@ public sealed partial class RepServerPlugin
 
     private HookResult TrackBombDefuse(EventBombDefused _, GameEventInfo info)
     {
-        if (roundStats is { } round &&
+        if (roundStats is { } round && IsLiveGame() &&
             (round.BombDetonationTime ?? FindPlantedBomb(tickingOnly: false)?.C4Blow) is float detonationTime)
             round.BombTimeRemaining = Math.Max(0, detonationTime - Server.CurrentTime);
         return HookResult.Continue;
@@ -152,7 +152,7 @@ public sealed partial class RepServerPlugin
 
     private HookResult TrackRoundDamage(EventPlayerHurt hurt, GameEventInfo _)
     {
-        if (roundStats is not null && hurt.Userid is { IsValid: true } victim &&
+        if (roundStats is not null && IsLiveGame() && hurt.Userid is { IsValid: true } victim &&
             hurt.Attacker is { IsValid: true } attacker && attacker.TeamNum != victim.TeamNum &&
             GetRoundPlayerStats(attacker) is { } stats)
             stats.Damage += hurt.DmgHealth;
@@ -162,14 +162,14 @@ public sealed partial class RepServerPlugin
     private void QueueRoundStats(EventRoundEnd round)
     {
         if (roundStats is not { } finishedRound || (RoundEndReason)round.Reason == RoundEndReason.GameCommencing ||
-            Utilities.GetGameRules() is not { WarmupPeriod: false })
+            !IsLiveGame())
             return;
 
         CaptureConnectedRoundPlayers();
         // The final kill and the round result can arrive in the same update.
         Server.NextWorldUpdate(() =>
         {
-            if (roundStats != finishedRound)
+            if (roundStats != finishedRound || !IsLiveGame())
                 return;
 
             roundStats = null;

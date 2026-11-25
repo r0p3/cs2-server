@@ -11,6 +11,6 @@ exec 9>data/.update.lock
 flock -n 9 || { echo "A server update is already running." >&2; exit 1; }
 
 docker compose config --quiet
-docker compose build cs2
-docker compose up -d --no-build --force-recreate cs2
+docker compose build cs2 tracker
+docker compose up -d --no-build --force-recreate cs2 tracker
 echo "The container has started. Follow SteamCMD and plugin startup with docker compose logs -f cs2."

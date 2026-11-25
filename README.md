@@ -24,7 +24,19 @@ docker compose logs -f cs2
 
 Check the startup log and run `meta list` in the server console. Join the server, look for the command list in chat, and try `!status`. The first SteamCMD download can take a while. Compose exposes UDP to players and binds RCON TCP to localhost.
 
-For a side-by-side test, use a different port, such as `CS2_PUBLIC_PORT=27016`. If the two checkouts have the same directory name, also set a unique `COMPOSE_PROJECT_NAME` in the test installation's `.env`.
+For a side-by-side test, use different ports, such as `CS2_PUBLIC_PORT=27016` and `TRACKER_PORT=27001`. If the two checkouts have the same directory name, also set a unique `COMPOSE_PROJECT_NAME` in the test installation's `.env`.
+
+## RepServer Tracker
+
+The tracker is part of the Docker Compose stack. Open `http://localhost:27000` on the host or forward port 27000 over SSH. For shared access, point an HTTPS reverse proxy at the tracker and set `REPSERVER_TRACKER_URL` in `.env` to the URL players will use. The tracker listens on loopback by default. Set `TRACKER_PORT` to change the host port and the port in the default `!trackeradmin` link.
+
+- **Live Match** shows the current map, mode, score, lineup, and match stats. **Players** and **Bot Hall of Fame** show lifetime stats gathered after installation. Warmup events are excluded. A 1v5+ clutch requires a human to survive and win as their team's last player after facing at least five living opponents. At 10, 25, 50, 100, 250, and 500 bot kills, then at every multiple of 1,000, chat names the player and the bot that marked the milestone.
+- **Map Records** keeps separate records for each pair of Steam accounts, map, side, and challenge. Start with two humans on one team and the full bot roster on the other. Wait for bot fill to finish before going live, or restart after the roster is ready. Each eligible live start adds an attempt, including attempts that are later abandoned. A roster change voids the result. **2v10 Win** is a regular win against ten bots. **2v10 16-0** uses `!mode 16`, `!16t`, or `!16ct`. **2vMax** ranks wins by bot count first. Use `!mode max` for the map’s maximum roster. Regular matches set up manually against eleven or more bots also qualify. Tied bot counts rank by round margin, then by fewer rounds conceded. `!record` shows the record for the current lineup and mode.
+- A bot spoils a 16-0 when it makes the decisive elimination, bomb play, or hostage rescue in the first round the human side loses during a 16-0 challenge or an eligible 2v10 attempt. A clock expiry has no individual credit.
+- **Autobuy** runs in CS2. Equip what you want and type `!autobuy` while alive. This saves the buyable gear you are carrying for your current side. At the start of later competitive rounds, autobuy purchases missing gear only if you can afford the full remaining cost. T and CT loadouts are saved separately. Use `!autobuy off` to pause purchases for both sides and `!autobuy on` to resume with your saved gear. Saving gear also enables autobuy.
+- **Admin** uses `data/state/admins.txt`. Type `!trackeradmin` in CS2 to get a personal web admin link that expires after 12 hours. The admin must be connected to the game to change maps or modes, control the match, start a 16-0 challenge, or manage bots. The tracker serves match stats and records to anyone with access to the dashboard.
+
+Tracker history and loadouts live under `data/state/tracker/` and persist across updates. Back up this directory with the rest of `data/state`.
 
 ## Remote admin panel
 
@@ -71,7 +83,10 @@ The server shows a command summary when you join. Run `!help` for syntax, descri
 | `!add_map <workshop_url> [name]` | Everyone | Save a Workshop map to the catalog |
 | `!change-mode bot-dm` or `!mode bot-dm` | Admin | Save the mode and restart the server |
 | `!mode bot-game t` | Admin | Play on T against CT bots |
+| `!mode win`, `!mode 16`, `!mode max` | Admin | Set up the opposing bot roster for a duo match |
 | `!live` | Admin | End warmup in competitive modes |
+| `!autobuy [on\|off]` | Everyone | Save your current gear or enable or disable autobuy for both sides |
+| `!trackeradmin` | Admin | Get a personal link to the web admin panel |
 | `!16ct`, `!16t` | Admin | Set up a 16–0 challenge with ten bots on the opposing team |
 | `!ready`, `!unready`, `!readystatus` | Everyone | Set or clear your ready marker or show readiness in chat |
 | `!restart` | Admin | Restart the match |
@@ -97,6 +112,8 @@ The fill commands only add bots. A fill started by a player stops if that player
 
 `bot-game` uses competitive rules and places bots on T. Use `!mode bot-game t` to play on T against CT bots. In either competitive profile, both players and bots receive a defuse kit when they spawn. CS2's bomb rules allow CT to defuse.
 
+Use `!mode win` for a regular match against 10 bots, `!mode 16` for a 16–0 challenge against 10 bots, or `!mode max` to fill the opposing side up to the map’s spawn, server slot, and bot roster limits. Your current team is the player side by default. Add `t` or `ct` to choose a side explicitly, as in `!mode max t`. All active players must join the player side. The selected mode stays active across map changes and server restarts. Switching from Deathmatch restarts the server into competitive mode.
+
 During warmup, type `ready` or `!ready`, or choose **Match readiness → Mark me as ready**. Use `unready` or `!unready` to clear your marker. Each change is announced in chat with the ready count, and a small HUD line shows your own status and the ready count. Hold **Tab** to see `[READY]` before the names of ready players, or use `!readystatus` for the list in chat. Warmup ends and the markers clear once all human players, including spectators, are ready. An admin can end warmup manually with `!live`.
 
 `bot-dm` runs free-for-all Deathmatch with fast respawns. `bot-dm-pistol` uses the same rules with pistols and knives. See [the mode profiles](config/modes/README.md).
@@ -105,7 +122,7 @@ Use `!16ct` to play CT against ten T bots, or `!16t` to play T against ten CT bo
 
 After each live competitive round, chat shows one line per human participant with kills, deaths, assists, headshot percentage, and damage. The number in parentheses after the round's headshot percentage is how much the match percentage changed. With ten opposing bots, five bot kills or 500 damage meet the green thresholds. A defuse also shows how much time was left on the bomb.
 
-The first startup uses `bot-game`. The selected mode is saved in `data/state/mode`. Changing modes restarts CS2 under Docker, and players must reconnect. To reset the default manually, write `bot-game` to `data/state/mode` and run `docker compose restart cs2`.
+The first startup uses `bot-game`. The selected mode is saved in `data/state/mode`. Switching between competitive and Deathmatch restarts CS2 under Docker, and players must reconnect. To reset the default manually, write `bot-game` to `data/state/mode` and run `docker compose restart cs2`.
 
 Loading a standard map listed in `config/maps.txt` saves it to `data/state/last-map`. The server restores that map after a restart, including after a session on a Workshop map. If the saved map is absent from the list, startup uses `CS2_STARTMAP`. To reset the saved map, remove `data/state/last-map` while the server is stopped.
 
@@ -175,6 +192,6 @@ git pull --ff-only
 ./scripts/update.sh
 ```
 
-The script validates Compose, builds the image, and recreates the container with the new plugin, startup script, and game mode profiles. Data and state remain in `data/`. SteamCMD updates CS2 during startup. Watch the logs and verify the plugin loaded. Back up `data/state` and `.env` before updating a server you need to restore.
+The script validates Compose, builds both images, and recreates the game server and tracker containers. Data and state remain in `data/`. SteamCMD updates CS2 during startup. Watch the logs and verify the plugin loaded. Back up `data/state` and `.env` before updating a server you need to restore.
 
 CounterStrikeSharp and Metamod versions are pinned in the Dockerfile. The base image uses a floating tag by default. Set `CS2_BASE_IMAGE` to a tested image digest in `.env` to pin that image.
